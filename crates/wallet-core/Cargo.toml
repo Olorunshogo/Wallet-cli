@@ -1,0 +1,19 @@
+[package]
+name = "wallet-core"
+description = "Engine-agnostic types, traits and errors for the wallet library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+bitcoin = { workspace = true }
+thiserror = { workspace = true }
+zeroize = { workspace = true }
+serde = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
+
+[features]
+serde = ["dep:serde", "bitcoin/serde"]

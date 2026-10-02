@@ -1,0 +1,15 @@
+[package]
+name = "wallet-bdk"
+description = "v1 wallet engine: implements wallet-core's WalletEngine on top of bdk_wallet"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wallet-core = { workspace = true }
+bdk_wallet = { workspace = true }
+zeroize = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

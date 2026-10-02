@@ -1,0 +1,44 @@
+[package]
+name = "wallet-cli"
+description = "Command-line demo client for the wallet library"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "wallet-cli"
+path = "src/main.rs"
+
+[dependencies]
+wallet = { workspace = true, features = ["rpc", "serde"] }
+clap = { workspace = true }
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+aes-gcm = { workspace = true }
+argon2 = { workspace = true }
+rand = { workspace = true }
+zeroize = { workspace = true }
+rpassword = "7"
+dotenvy = { workspace = true }
+colored = { workspace = true }
+indicatif = { workspace = true }
+ratatui = { workspace = true }
+qrcode = { workspace = true }
+toml = { workspace = true }
+corepc-node = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
+
+[features]
+default = ["local-node"]
+# `--node local` and `tui --demo`: the app starts its own regtest bitcoind
+# (downloaded at build time), so nothing needs to be installed.
+local-node = ["dep:corepc-node", "dep:tempfile"]
+
+[dev-dependencies]
+tempfile = { workspace = true }
+assert_cmd = { workspace = true }
+predicates = { workspace = true }
+corepc-node = { workspace = true }

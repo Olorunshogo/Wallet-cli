@@ -1,0 +1,8 @@
+/target
+*.sqlite
+*.sqlite-journal
+.wallet/
+# Local settings; may hold RPC passwords or a mnemonic.
+.env
+# The template is meant to be committed (a global `.env.*` rule would hide it).
+!.env.example

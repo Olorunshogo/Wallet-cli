@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      # Includes the regtest suite: corepc-node downloads bitcoind at build time.
+      - name: Test
+        run: cargo test --workspace --all-features
+      # Examples are documentation; run them so they cannot silently break.
+      - name: Examples
+        run: |
+          for example in quickstart custom_backend watch_only_signing error_handling bump_fee regtest; do
+            cargo run -p wallet --example "$example"
+          done

@@ -1,0 +1,11 @@
+[package]
+name = "wallet-rpc"
+description = "Bitcoin Core RPC backend: BlockSource, Broadcaster and FeeEstimator"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wallet-core = { workspace = true }
+bitcoincore-rpc = { workspace = true }
+tracing = { workspace = true }

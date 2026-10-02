@@ -1,0 +1,23 @@
+[package]
+name = "wallet"
+description = "A small, modular Bitcoin wallet library with pluggable engines and chain backends"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+wallet-core = { workspace = true }
+wallet-bdk = { workspace = true }
+wallet-rpc = { workspace = true, optional = true }
+tracing = { workspace = true }
+
+[features]
+default = ["rpc"]
+# Bitcoin Core JSON-RPC backend.
+rpc = ["dep:wallet-rpc"]
+# serde support for the public data types (used by the CLI's --json output).
+serde = ["wallet-core/serde"]
+
+[dev-dependencies]
+corepc-node = { workspace = true }
+tempfile = { workspace = true }

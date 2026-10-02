@@ -1,0 +1,16 @@
+# Shortcuts for working in this repo.
+#
+#   cargo wallet init              same as: cargo run -p wallet-cli -- init
+#   cargo wallet tui --demo
+#   cargo wallet -- --help         the app's help (cargo wallet --help also works)
+#
+# Everything after `cargo wallet` goes to the app. Cargo's own flags go before
+# the alias: `cargo --offline wallet init`.
+#   cargo alice init               a named wallet: same as cargo wallet -w alice init
+#   cargo bob address
+#
+# Any other name: cargo wallet -w <name> ...
+[alias]
+wallet = "run --quiet -p wallet-cli --"
+alice = "run --quiet -p wallet-cli -- --wallet alice"
+bob = "run --quiet -p wallet-cli -- --wallet bob"
