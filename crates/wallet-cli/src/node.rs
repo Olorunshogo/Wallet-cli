@@ -33,8 +33,22 @@ pub enum NodeMode {
     /// A regtest `bitcoind` this app runs in the background, shared by every
     /// regtest wallet.
     Local,
+    /// Polar's regtest bitcoind (Docker), with Polar's default RPC
+    /// settings unless `--rpc-*` overrides them. Its wallets live apart from
+    /// the local node's, since the two are different chains.
+    Polar,
     /// No node: work offline with what is stored locally.
     None,
+}
+
+/// The mode used when `--node` is not given: the local node on regtest
+/// unless the user configured a node of their own, else that node.
+pub fn default_mode(network: Network, rpc: &RpcArgs) -> NodeMode {
+    if cfg!(feature = "local-node") && network == Network::Regtest && !rpc.is_set() {
+        NodeMode::Local
+    } else {
+        NodeMode::External
+    }
 }
 
 /// Default RPC port of the local node; the P2P port is the next one. Chosen
@@ -108,11 +122,37 @@ pub fn connect(mode: NodeMode, rpc: &RpcArgs, local: &LocalNode, network: Networ
                 keepalive: Some(Box::new(lease)),
             })
         }
+        NodeMode::Polar => {
+            if network != Network::Regtest {
+                bail!("Polar runs regtest only; drop --network");
+            }
+            let rpc = rpc.polar();
+            let url = rpc.url(network);
+            let client = rpc
+                .connect(network)
+                .and_then(|c| c.tip().map(|_| c).map_err(Into::into))
+                .map_err(|e| anyhow::anyhow!(polar_unreachable(&url, &format!("{e:#}"))))?;
+            Ok(Node {
+                client,
+                label: format!("Polar node at {url}"),
+                keepalive: None,
+            })
+        }
         NodeMode::None => bail!(
             "this command needs a node, but --node none is set; \
              use --node local (regtest) or --node external"
         ),
     }
+}
+
+/// What to say when Polar's node cannot be reached.
+pub fn polar_unreachable(url: &str, cause: &str) -> String {
+    format!(
+        "could not connect to the Polar node at {url} ({cause}). Is your Polar network \
+         started? Start it in Polar, check the RPC port and login in the bitcoind node's \
+         Connect tab (WALLET_RPC_URL, WALLET_RPC_USER, WALLET_RPC_PASS), or use the local \
+         node instead (WALLET_NODE=local)"
+    )
 }
 
 // === The shared local node

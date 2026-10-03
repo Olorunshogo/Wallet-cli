@@ -10,7 +10,7 @@ Built for the Rust for Bitcoin cohort capstone (project 7: Wallet Library).
 - **Works offline:** addresses, balances (as of the last sync) and signing never need a node.
 - **Tested:** unit tests, a public API suite against an in-memory chain, doc examples, and end-to-end tests against a real regtest `bitcoind`.
 
-**Contents:** [Try it](#try-it) · [Alice pays Bob](#alice-pays-bob) · [Requirements](#requirements) · [Running the app](#running-the-app) · [Guides](#guides) · [Using the library](#using-the-library) · [Examples](#examples) · [Development](#development)
+**Contents:** [Try it](#try-it) · [Two wallets pay each other](#two-wallets-pay-each-other) · [Syncing with a node](#syncing-with-a-node) · [Requirements](#requirements) · [Running the app](#running-the-app) · [Guides](#guides) · [Using the library](#using-the-library) · [Examples](#examples) · [Development](#development)
 
 ## Try it
 
@@ -21,29 +21,44 @@ cargo wallet tui --demo
 
 The first build downloads Bitcoin Core 29.0 once (for the demo node and tests), so it takes a few minutes. Then a throwaway regtest node starts, a wallet is created with fresh recovery words, and the terminal UI opens. Press `f` for coins, `3` to send, `m` to mine a block, `?` for every key, `q` to quit (which also stops the node). Nothing is kept.
 
-## Alice pays Bob
+## Two wallets pay each other
 
-Two wallets on one private regtest network, with nothing to install. In one command:
+Two wallets on one private regtest network, with nothing to install. Name them whatever you like; `alice` and `bob` are only examples.
+
+**In the TUI:**
+
+1. `cargo wallet tui`, type a name, `enter`, then `enter` three times to create it.
+2. `f` for coins.
+3. `w`, then `n`, to name and create a second wallet. `w` again to switch back.
+4. `3` (Send), `enter`, `ctrl+w` to fill in your other wallet's address, an amount (`25000` or `0.5btc`), `enter`, `y`.
+5. `m` to confirm it, then `w` to switch over and see it arrive.
+
+Or one wallet per terminal: `cargo wallet -w alice tui` and `cargo wallet -w bob tui` (`./scripts/regtest.sh demo-tui alice bob` prints the steps). See [docs/TUI.md](docs/TUI.md#two-wallets-paying-each-other).
+
+**On the command line:** `./scripts/regtest.sh demo alice bob` in one go, or step by step:
 
 ```bash
-./scripts/regtest.sh demo
+cargo wallet -w alice init                 # fresh recovery words
+cargo wallet -w bob init
+cargo wallet -w alice mine 101             # coins for alice
+cargo wallet -w bob address                # copy bob's address
+cargo wallet -w alice send <bob's address> 0.0025btc
+cargo wallet -w alice mine 1               # confirm it
+cargo wallet -w bob history                # +250,000 sat, confirmed
 ```
 
-Or step by step (`cargo alice` and `cargo bob` are shortcuts for `cargo wallet --wallet alice` and `--wallet bob`):
+## Syncing with a node
 
-```bash
-cargo alice init                           # Alice's wallet, fresh recovery words
-cargo bob init                             # Bob's wallet
-cargo alice --node local mine 101          # coins for Alice (on the shared local node)
-cargo bob address                          # copy Bob's address
-cargo alice --node local send <bob's address> 250000
-cargo alice --node local mine 1            # confirm it
-cargo bob --node local history             # +250,000 sat, confirmed
-```
+A wallet syncs by reading blocks from a Bitcoin Core node over RPC, and broadcasts through it. Pick the node with `--node` or `WALLET_NODE`:
 
-Or in two terminals with the TUI: `cargo alice --node local tui` and `cargo bob --node local tui`; press `f` in Alice's, send to Bob's address from screen `3`, press `m` to confirm. Put `WALLET_NODE=local` in a `.env` (copy [`.env.example`](.env.example)) to drop `--node local` everywhere.
+| Node | When | Setup |
+|---|---|---|
+| `local` | the default on regtest | none: the app runs one regtest `bitcoind` shared by all your wallets, started on demand and stopped when the last program using it exits (`./scripts/regtest.sh start` keeps it up) |
+| `polar` | [Polar](https://lightningpolar.com) | `--node polar`; its RPC defaults are filled in, its wallets live in `.wallet/polar`; see [Connecting to Polar](docs/CLI.md#connecting-to-polar) |
+| `external` | your own `bitcoind`, or any non-regtest network | set `WALLET_RPC_URL` and either `WALLET_RPC_COOKIE` or `WALLET_RPC_USER` / `WALLET_RPC_PASS` |
+| `none` | offline on purpose | none |
 
-`--node local` runs one regtest `bitcoind` shared by all your wallets: started on demand, stopped when the last program using it exits. `./scripts/regtest.sh start` keeps it running instead, and `stop` stops it.
+If the node cannot be reached, the TUI opens **OFFLINE**, shows why on the dashboard, and keeps retrying (with Polar, `L` switches to the local node for that session).
 
 ## Requirements
 
@@ -52,17 +67,16 @@ Or in two terminals with the TUI: `cargo alice --node local tui` and `cargo bob 
 | Rust 1.88 or newer (`rustup update stable`) | edition 2024 |
 | A C compiler (`sudo apt install build-essential` on Ubuntu/Debian, Xcode tools on macOS) | SQLite is compiled in |
 | Internet on the first build | downloads `bitcoind` for the local node, the demo and tests |
-| Bitcoin Core | only to use your own node (`--node external`); `--node local` and `--demo` start one for you |
+| Bitcoin Core | only to use your own node (`--node external`) or [Polar](https://lightningpolar.com) (`--node polar`); the regtest default and `--demo` start one for you |
 
 ## Running the app
 
 The program is `wallet-cli`, built into `target/` (not installed). In this repo:
 
 ```bash
-cargo wallet <command>          # any wallet, e.g. cargo wallet wallets
-cargo alice <command>           # Alice's wallet
-cargo bob <command>             # Bob's wallet
-cargo wallet -w carol <command> # any other name
+cargo wallet <command>          # the default wallet, e.g. cargo wallet wallets
+cargo wallet -w <name> <command> # a wallet by name, any name you choose
+cargo alice <command>           # shortcut for -w alice (likewise cargo bob)
 ```
 
 Elsewhere: `./target/debug/wallet-cli <command>`, or install it once with `cargo install --path crates/wallet-cli`. Cargo's own flags go before the alias (`cargo --offline wallet init`); don't repeat the program name (`cargo run wallet-cli init` fails).
@@ -72,7 +86,7 @@ Elsewhere: `./target/debug/wallet-cli <command>`, or install it once with `cargo
 | Guide | Covers |
 |---|---|
 | [docs/CLI.md](docs/CLI.md) | every command and option, named wallets, the shared local node, `regtest.sh`, `.env`, JSON output, data on disk, troubleshooting |
-| [docs/TUI.md](docs/TUI.md) | screens, keys, switching wallets, offline mode, quitting, `tui.toml` |
+| [docs/TUI.md](docs/TUI.md) | screens, keys, naming and switching wallets, paying another wallet, offline mode, quitting, `tui.toml` |
 | [docs/architecture.md](docs/architecture.md) | crates, seams, data flows, error strategy, known behaviour |
 | [docs/v2/README.md](docs/v2/README.md) | the plan for a native engine without BDK |
 
@@ -84,11 +98,16 @@ wallet = { git = "<repo url>" }
 ```
 
 ```rust
+use std::env;
+
 use wallet::bitcoin::{Amount, FeeRate, Network};
 use wallet::rpc::{RpcAuth, RpcClient};
 use wallet::{KeySource, MnemonicLength, Recipient, Wallet, generate_mnemonic};
 
-let node = RpcClient::new("http://127.0.0.1:18443", RpcAuth::Cookie("/path/to/.cookie".into()))?;
+// Node location comes from the environment; see .env.example for per-network defaults.
+let url = env::var("WALLET_RPC_URL")?;
+let cookie = env::var("WALLET_RPC_COOKIE")?;
+let node = RpcClient::new(&url, RpcAuth::Cookie(cookie.into()))?;
 
 let mnemonic = generate_mnemonic(MnemonicLength::Words12)?;   // fresh every call
 let mut wallet = Wallet::builder(Network::Regtest)

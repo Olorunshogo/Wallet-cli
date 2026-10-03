@@ -79,6 +79,15 @@ impl Modal {
         }
     }
 
+    /// Input for a new wallet's name; `taken` names are refused.
+    pub fn name_field(taken: Vec<String>) -> Field<WalletNameValidator> {
+        Field::new(
+            "New wallet name",
+            "any name: letters, digits, - or _",
+            WalletNameValidator { taken },
+        )
+    }
+
     /// Handle a key.
     pub fn on_key(
         &mut self,
@@ -128,11 +137,7 @@ impl Modal {
                             .as_ref()
                             .map(|l| l.iter().map(|w| w.name.clone()).collect())
                             .unwrap_or_default();
-                        *naming = Some(Field::new(
-                            "New wallet name",
-                            "e.g. bob",
-                            WalletNameValidator { taken },
-                        ));
+                        *naming = Some(Modal::name_field(taken));
                     }
                     KeyCode::Enter => {
                         if let Some(entry) = list.as_ref().and_then(|l| l.get(*selected)) {
@@ -431,7 +436,13 @@ impl Modal {
                         theme.muted(),
                     )),
                     Line::raw(""),
-                    hint_line(&[("enter".into(), "start".into())], theme),
+                    hint_line(
+                        &[
+                            ("enter".into(), "start".into()),
+                            ("c".into(), "copy words".into()),
+                        ],
+                        theme,
+                    ),
                 ]);
                 f.render_widget(widgets::paragraph(lines), inner);
             }

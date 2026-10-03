@@ -76,15 +76,11 @@ struct Cli {
     allow_mainnet: bool,
 
     /// Where chain data comes from: your Bitcoin Core (`external`), the shared
-    /// local regtest node this app runs for all wallets (`local`), or none.
-    #[arg(
-        long,
-        global = true,
-        value_enum,
-        default_value = "external",
-        env = "WALLET_NODE"
-    )]
-    node: NodeMode,
+    /// local regtest node this app runs for all wallets (`local`), Polar's
+    /// regtest node (`polar`), or none. Default: `local` on regtest when no
+    /// `--rpc-*` setting is given, otherwise `external`.
+    #[arg(long, global = true, value_enum, env = "WALLET_NODE")]
+    node: Option<NodeMode>,
 
     /// Data directory of the local node. Default: .wallet/regtest/node.
     #[arg(long, global = true, env = "WALLET_NODE_DIR")]
@@ -106,7 +102,7 @@ enum Command {
     /// Create a new wallet with a freshly generated mnemonic.
     Init {
         /// Number of words: 12, 15, 18, 21 or 24.
-        #[arg(long, default_value_t = 12, value_parser = parse_word_count)]
+        #[arg(long, env = "WALLET_WORDS", default_value_t = 12, value_parser = parse_word_count)]
         words: usize,
     },
     /// Restore a wallet from an existing mnemonic.
@@ -138,8 +134,9 @@ enum Command {
     /// Pay an address.
     Send {
         address: Address<NetworkUnchecked>,
-        /// Amount in satoshis.
-        amount: u64,
+        /// Amount: sats (`50000`) or BTC with a suffix (`0.5btc`).
+        #[arg(value_parser = tui::validate::parse_amount)]
+        amount: Amount,
         /// Fee rate in sat/vB. Estimated from the node when omitted.
         #[arg(long)]
         fee_rate: Option<u64>,
@@ -159,8 +156,9 @@ enum Command {
     /// Export an unsigned PSBT for external signing.
     ExportPsbt {
         address: Address<NetworkUnchecked>,
-        /// Amount in satoshis.
-        amount: u64,
+        /// Amount: sats (`50000`) or BTC with a suffix (`0.5btc`).
+        #[arg(value_parser = tui::validate::parse_amount)]
+        amount: Amount,
         /// Fee rate in sat/vB.
         #[arg(long)]
         fee_rate: Option<u64>,
@@ -217,7 +215,7 @@ enum WalletsAction {
         /// Its name: a-z, 0-9, - and _.
         name: String,
         /// Number of words: 12, 15, 18, 21 or 24.
-        #[arg(long, default_value_t = 12, value_parser = parse_word_count)]
+        #[arg(long, env = "WALLET_WORDS", default_value_t = 12, value_parser = parse_word_count)]
         words: usize,
     },
     /// Make a wallet the default.
@@ -293,7 +291,7 @@ impl From<Selection> for CoinSelection {
     }
 }
 
-fn parse_word_count(s: &str) -> Result<usize, String> {
+pub(crate) fn parse_word_count(s: &str) -> Result<usize, String> {
     let words: usize = s.parse().map_err(|_| format!("{s} is not a number"))?;
     MnemonicLength::from_words(words)
         .map(|_| words)
@@ -351,7 +349,19 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
     {
         bail!("mainnet wallets must be encrypted; add --encrypt");
     }
-    let wallets = Wallets::new(None, cli.network);
+    let node_mode = cli
+        .node
+        .unwrap_or_else(|| node::default_mode(cli.network, &cli.rpc));
+    if node_mode == NodeMode::Polar && cli.network != Network::Regtest {
+        bail!("Polar runs regtest only; drop --network or pick another --node");
+    }
+    // The local node's wallets; Polar's live apart, as it is another chain.
+    let regtest = Wallets::new(None, cli.network);
+    let wallets = if node_mode == NodeMode::Polar {
+        Wallets::polar(None)
+    } else {
+        regtest.clone()
+    };
     let (dir, name) = match &cli.datadir {
         Some(path) => (DataDir::at(path.clone()), None),
         None => {
@@ -365,7 +375,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
     let local = LocalNode {
         dir: cli.node_dir.clone().unwrap_or_else(|| match &cli.datadir {
             Some(path) => path.join("node"),
-            None => wallets.root().join("node"),
+            None => regtest.root().join("node"),
         }),
         port: cli.node_port,
     };
@@ -373,6 +383,9 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         dir: dir.clone(),
         name: name.clone(),
         wallets: cli.datadir.is_none().then(|| wallets.clone()),
+        pick: cli.datadir.is_none()
+            && cli.wallet.is_none()
+            && name.as_deref().is_some_and(|n| !wallets.exists(n)),
     };
     let open = |dir: &DataDir, network| open_wallet(dir, name.as_deref(), &wallets, network);
     let busy = activity::enabled(cli.json);
@@ -468,7 +481,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
             }
             let mut wallet = open(&dir, cli.network)?;
             let act = Activity::start(busy, "Opening wallet…");
-            let conn = connect_node(cli.node, &cli.rpc, &local, cli.network, &act)?;
+            let conn = connect_node(node_mode, &cli.rpc, &local, cli.network, &act)?;
             let to = match to {
                 Some(address) => address
                     .require_network(cli.network)
@@ -488,7 +501,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
             out.mined(blocks, &to, &report, &wallet.balance());
         }
         Command::Tui(args) => {
-            return tui::run(args, cli.network, cli.node, target, cli.rpc.clone(), local);
+            return tui::run(args, cli.network, node_mode, target, cli.rpc.clone(), local);
         }
         Command::Init { words } => {
             let length = MnemonicLength::from_words(words).expect("validated by clap");
@@ -526,7 +539,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         Command::Sync => {
             let mut wallet = open(&dir, cli.network)?;
             let act = Activity::start(busy, "Opening wallet…");
-            let conn = connect_node(cli.node, &cli.rpc, &local, cli.network, &act)?;
+            let conn = connect_node(node_mode, &cli.rpc, &local, cli.network, &act)?;
             let report = sync_with(&mut wallet, &conn, &act, &dir).context("sync failed")?;
             act.done();
             out.sync(&report, &wallet.balance());
@@ -550,7 +563,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         } => {
             let mut wallet = open(&dir, cli.network)?;
             let act = Activity::start(busy, "Opening wallet…");
-            let conn = connect_node(cli.node, &cli.rpc, &local, cli.network, &act)?;
+            let conn = connect_node(node_mode, &cli.rpc, &local, cli.network, &act)?;
             sync_with(&mut wallet, &conn, &act, &dir).context("sync before send failed")?;
             let node = conn.rpc();
 
@@ -561,10 +574,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
                     estimate_fee(node, target, out)?
                 }
             };
-            let mut request = TxRequest::new(
-                vec![Recipient::new(address, Amount::from_sat(amount))],
-                fee_rate,
-            );
+            let mut request = TxRequest::new(vec![Recipient::new(address, amount)], fee_rate);
             request.coin_selection = selection.map(Into::into);
 
             act.say("Selecting coins and signing…");
@@ -607,7 +617,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         } => {
             let mut wallet = open(&dir, cli.network)?;
             let act = Activity::start(busy, "Opening wallet…");
-            let conn = connect_node(cli.node, &cli.rpc, &local, cli.network, &act)?;
+            let conn = connect_node(node_mode, &cli.rpc, &local, cli.network, &act)?;
             sync_with(&mut wallet, &conn, &act, &dir).context("sync before export failed")?;
 
             let fee_rate = match fee_rate {
@@ -618,10 +628,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
                 }
             };
             act.say("Building the PSBT…");
-            let psbt = wallet.build_tx(
-                [Recipient::new(address, Amount::from_sat(amount))],
-                fee_rate,
-            )?;
+            let psbt = wallet.build_tx([Recipient::new(address, amount)], fee_rate)?;
             let psbt_bytes = psbt.serialize();
             std::fs::write(&output, &psbt_bytes)
                 .with_context(|| format!("could not write {}", output.display()))?;
@@ -631,7 +638,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         Command::SignPsbt { input, broadcast } => {
             let mut wallet = open(&dir, cli.network)?;
             let act = Activity::start(busy, "Opening wallet…");
-            let conn = connect_node(cli.node, &cli.rpc, &local, cli.network, &act)?;
+            let conn = connect_node(node_mode, &cli.rpc, &local, cli.network, &act)?;
             sync_with(&mut wallet, &conn, &act, &dir).context("sync before sign failed")?;
 
             act.say("Signing…");
@@ -656,7 +663,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         Command::BumpFee { txid, fee_rate } => {
             let mut wallet = open(&dir, cli.network)?;
             let act = Activity::start(busy, "Opening wallet…");
-            let conn = connect_node(cli.node, &cli.rpc, &local, cli.network, &act)?;
+            let conn = connect_node(node_mode, &cli.rpc, &local, cli.network, &act)?;
             sync_with(&mut wallet, &conn, &act, &dir).context("sync before bump failed")?;
 
             act.say("Building and signing the replacement…");

@@ -44,6 +44,8 @@ pub struct TuiConfig {
     pub mnemonic_words: usize,
     /// How many recent transactions the dashboard lists.
     pub recent_txs: usize,
+    /// Seconds before copied recovery words are cleared from the clipboard.
+    pub clipboard_clear_secs: u64,
     /// Colors. See [`ThemeConfig`].
     pub theme: ThemeConfig,
 }
@@ -61,6 +63,7 @@ impl Default for TuiConfig {
             tween_ms: 700,
             mnemonic_words: 12,
             recent_txs: 6,
+            clipboard_clear_secs: 60,
             theme: ThemeConfig::default(),
         }
     }
@@ -98,6 +101,9 @@ impl TuiConfig {
         if MnemonicLength::from_words(self.mnemonic_words).is_none() {
             bail!("mnemonic_words must be 12, 15, 18, 21 or 24");
         }
+        if !(1..=600).contains(&self.clipboard_clear_secs) {
+            bail!("clipboard_clear_secs must be between 1 and 600");
+        }
         if self.reconnect_secs == 0 {
             bail!("reconnect_secs must be at least 1");
         }
@@ -121,6 +127,11 @@ impl TuiConfig {
     /// Time between reconnect attempts while offline.
     pub fn reconnect(&self) -> Duration {
         Duration::from_secs(self.reconnect_secs)
+    }
+
+    /// How long copied recovery words stay on the clipboard.
+    pub fn clipboard_clear(&self) -> Duration {
+        Duration::from_secs(self.clipboard_clear_secs)
     }
 
     /// Mnemonic length for new wallets.

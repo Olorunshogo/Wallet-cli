@@ -6,11 +6,15 @@
 //! Core implementation in [`rpc`] (feature `rpc`, on by default).
 //!
 //! ```no_run
+//! use std::env;
+//!
 //! use wallet::bitcoin::{Amount, FeeRate, Network};
 //! use wallet::rpc::{RpcAuth, RpcClient};
 //! use wallet::{KeySource, Recipient, Wallet};
 //!
-//! let node = RpcClient::new("http://127.0.0.1:18443", RpcAuth::Cookie("/path/.cookie".into()))?;
+//! let url = env::var("WALLET_RPC_URL")?;
+//! let cookie = env::var("WALLET_RPC_COOKIE")?;
+//! let node = RpcClient::new(&url, RpcAuth::Cookie(cookie.into()))?;
 //! // A fresh random mnemonic; store it safely, it is the wallet's backup.
 //! let mnemonic = wallet::generate_mnemonic(wallet::MnemonicLength::Words12)?;
 //! let mut wallet = Wallet::builder(Network::Regtest)

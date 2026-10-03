@@ -85,12 +85,21 @@ pub enum Command {
     },
     /// Try to reach the node again now.
     Reconnect,
+    /// Polar is down: switch to the local node and its wallets.
+    UseLocalNode,
     /// List the named wallets.
     ListWallets,
     /// Close this wallet and open (or start creating) the one called `name`.
     SwitchWallet {
         /// Wallet name.
         name: String,
+    },
+    /// The receive address of another named wallet, to pay it: the first
+    /// wallet after `after` by name (wrapping), so repeating cycles through
+    /// them.
+    PayeeAddress {
+        /// The wallet picked last time, if any.
+        after: Option<String>,
     },
     /// Broadcast every payment saved in the outbox while offline.
     BroadcastSaved,
@@ -110,6 +119,7 @@ pub enum Command {
 #[allow(missing_docs)]
 pub enum Op {
     Wallets,
+    Payee,
     Open,
     Unlock,
     Outbox,
@@ -178,7 +188,7 @@ pub enum Connection {
     Online {
         /// Human description of the backend.
         label: String,
-        /// Whether `Mine`/`Faucet` work (managed regtest node).
+        /// Whether `Mine`/`Faucet` work (any regtest node).
         can_mine: bool,
     },
     /// Not reachable; the wallet still works with its stored data.
@@ -234,6 +244,13 @@ pub enum WorkerEvent {
     },
     /// A fresh receive address.
     Address(AddressInfo),
+    /// Another wallet's receive address, to pay it.
+    PayeeAddress {
+        /// The wallet's name.
+        name: String,
+        /// Its next unused receive address.
+        address: String,
+    },
     /// A fee rate suggestion.
     FeeEstimate {
         /// The rate.

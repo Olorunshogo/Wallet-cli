@@ -63,6 +63,8 @@ pub struct Send {
     fee_target: u16,
     /// Whether the node is reachable; offline payments are saved, not sent.
     online: bool,
+    /// The named wallet whose address was filled in with ctrl+w.
+    payee: Option<String>,
 }
 
 impl Send {
@@ -91,6 +93,7 @@ impl Send {
             banner: None,
             fee_target: config.fee_target_blocks,
             online: true,
+            payee: None,
         }
     }
 
@@ -101,6 +104,7 @@ impl Send {
     }
 
     fn reset(&mut self) {
+        self.payee = None;
         self.address.reset();
         self.amount.reset();
         self.focus = ADDRESS;
@@ -149,6 +153,9 @@ impl Send {
         match key.code {
             KeyCode::Esc => self.editing = false,
             KeyCode::Char('e') if ctrl => self.estimate(cx),
+            KeyCode::Char('w') if ctrl => cx.send(Command::PayeeAddress {
+                after: self.payee.clone(),
+            }),
             KeyCode::Tab | KeyCode::Down => self.focus = (self.focus + 1) % FOCUSABLE,
             KeyCode::BackTab | KeyCode::Up => self.focus = (self.focus + FOCUSABLE - 1) % FOCUSABLE,
             KeyCode::Enter => self.submit(cx),
@@ -160,7 +167,11 @@ impl Send {
             }
             _ => {
                 match self.focus {
-                    ADDRESS => self.address.handle(key),
+                    ADDRESS => {
+                        // A typed or pasted address is no longer the wallet's.
+                        self.payee = None;
+                        self.address.handle(key)
+                    }
                     AMOUNT => self.amount.handle(key),
                     FEE => self.fee.handle(key),
                     _ => false,
@@ -181,6 +192,7 @@ impl Screen for Send {
             (Stage::Editing, true) => &[
                 ("tab", "next field"),
                 ("ctrl+e", "estimate fee"),
+                ("ctrl+w", "pay a wallet"),
                 ("enter", "review"),
                 ("esc", "leave form"),
             ],
@@ -244,6 +256,15 @@ impl Screen for Send {
                 }
             }
             WorkerEvent::Preview(preview) => self.stage = Stage::Review(preview.clone()),
+            WorkerEvent::PayeeAddress { name, address } => {
+                self.address.set(address.clone());
+                self.payee = Some(name.clone());
+                self.focus = AMOUNT;
+                cx.notify(
+                    Tone::Info,
+                    format!("Paying wallet {name} (ctrl+w again for the next one)"),
+                );
+            }
             // The app announces where it was saved.
             WorkerEvent::Saved { .. } => self.reset(),
             WorkerEvent::Sent { txid, fee, .. } => {
@@ -325,13 +346,17 @@ impl Screen for Send {
 
         if let Some(s) = view.snapshot {
             let spendable = s.balance.confirmed + s.balance.unconfirmed;
-            f.render_widget(
-                widgets::paragraph(Line::from(Span::styled(
-                    format!(" Available {}", format::sats(spendable)),
-                    theme.muted(),
-                ))),
-                available,
-            );
+            let mut spans = vec![Span::styled(
+                format!(" Available {}", format::sats(spendable)),
+                theme.muted(),
+            )];
+            if let Some(name) = &self.payee {
+                spans.push(Span::styled(
+                    format!("  · paying wallet {name}"),
+                    theme.title(),
+                ));
+            }
+            f.render_widget(widgets::paragraph(Line::from(spans)), available);
         }
         if let Some(error) = &self.banner {
             let lines = vec![
@@ -380,6 +405,10 @@ impl Send {
             Stage::Editing => vec![
                 Line::from(Span::styled(
                     "Fill in the form, then press enter to review.",
+                    theme.muted(),
+                )),
+                Line::from(Span::styled(
+                    "Paying one of your wallets? ctrl+w fills in its address.",
                     theme.muted(),
                 )),
                 Line::raw(""),
@@ -473,6 +502,7 @@ mod tests {
         commands: Vec<Command>,
         notices: Vec<(Tone, String)>,
         modal: Option<Modal>,
+        copies: Vec<crate::tui::clipboard::ClipRequest>,
         config: TuiConfig,
     }
 
@@ -482,6 +512,7 @@ mod tests {
                 commands: Vec::new(),
                 notices: Vec::new(),
                 modal: None,
+                copies: Vec::new(),
                 config: TuiConfig::default(),
             }
         }
@@ -494,6 +525,7 @@ mod tests {
                 commands: &mut self.commands,
                 notices: &mut self.notices,
                 modal: &mut self.modal,
+                copies: &mut self.copies,
                 now: Instant::now(),
             }
         }

@@ -55,27 +55,7 @@ impl Validator for AmountValidator {
     type Output = Amount;
 
     fn validate(&self, input: &str) -> Result<Self::Output, String> {
-        let text = input.trim().to_lowercase().replace([',', '_'], "");
-        if text.is_empty() {
-            return Err("enter an amount".into());
-        }
-        let amount = if let Some(number) = text.strip_suffix("btc") {
-            Amount::from_str_in(number.trim(), Denomination::Bitcoin)
-                .map_err(|_| "not a valid BTC amount".to_string())?
-        } else {
-            let number = text
-                .strip_suffix("sats")
-                .or_else(|| text.strip_suffix("sat"))
-                .unwrap_or(&text)
-                .trim();
-            let sats: u64 = number
-                .parse()
-                .map_err(|_| "use whole sats, or add \"btc\" for decimals".to_string())?;
-            Amount::from_sat(sats)
-        };
-        if amount == Amount::ZERO {
-            return Err("amount must be more than zero".into());
-        }
+        let amount = parse_amount(input)?;
         if let Some(max) = self.max
             && amount > max
         {
@@ -86,6 +66,33 @@ impl Validator for AmountValidator {
         }
         Ok(amount)
     }
+}
+
+/// A positive amount: whole sats (`50000`, `50,000 sats`) or BTC with a
+/// suffix (`0.0005 btc`). Shared by the TUI form and the CLI arguments.
+pub fn parse_amount(input: &str) -> Result<Amount, String> {
+    let text = input.trim().to_lowercase().replace([',', '_'], "");
+    if text.is_empty() {
+        return Err("enter an amount".into());
+    }
+    let amount = if let Some(number) = text.strip_suffix("btc") {
+        Amount::from_str_in(number.trim(), Denomination::Bitcoin)
+            .map_err(|_| "not a valid BTC amount".to_string())?
+    } else {
+        let number = text
+            .strip_suffix("sats")
+            .or_else(|| text.strip_suffix("sat"))
+            .unwrap_or(&text)
+            .trim();
+        let sats: u64 = number
+            .parse()
+            .map_err(|_| "use whole sats, or add \"btc\" for decimals".to_string())?;
+        Amount::from_sat(sats)
+    };
+    if amount == Amount::ZERO {
+        return Err("amount must be more than zero".into());
+    }
+    Ok(amount)
 }
 
 /// A whole fee rate in sat/vB within bounds.

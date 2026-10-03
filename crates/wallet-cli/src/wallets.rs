@@ -75,6 +75,16 @@ impl Wallets {
         }
     }
 
+    /// The wallets used with Polar, under `home/polar` (default home:
+    /// `.wallet`). Polar is a regtest chain of its own, so its wallets are
+    /// kept apart from the local node's and never see the other chain.
+    pub fn polar(home: Option<PathBuf>) -> Self {
+        let home = home.unwrap_or_else(|| PathBuf::from(".wallet"));
+        Self {
+            root: home.join("polar"),
+        }
+    }
+
     /// The network directory (`.wallet/regtest`).
     pub fn root(&self) -> &Path {
         &self.root

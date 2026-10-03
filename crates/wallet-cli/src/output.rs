@@ -639,6 +639,9 @@ fn hint(err: &anyhow::Error) -> Option<String> {
         "Create one with `init` (or `wallets create <name>`), or bring one back with `restore --mnemonic \"...\"`."
     } else if has("could not start the local regtest node") {
         "Close the TUI or any other command using this wallet's node, then retry."
+    } else if has("could not connect to the Polar node") {
+        "Start your network in Polar, check the RPC port and login in its Connect tab, \
+         or use the local node instead: `--node local`."
     } else if has("could not connect") || has("chain backend unreachable") {
         "Start bitcoind, check --rpc-url / --rpc-cookie, or use `--node local` (regtest, nothing to install)."
     } else if has("insufficient funds") {

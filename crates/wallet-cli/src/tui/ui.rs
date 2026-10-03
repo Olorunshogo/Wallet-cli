@@ -38,6 +38,7 @@ pub fn draw(f: &mut Frame, app: &App, now: Instant) {
             now,
             match app.node {
                 NodeMode::External => "Connecting to the node…",
+                NodeMode::Polar => "Connecting to the Polar node…",
                 NodeMode::Local if app.demo => "Starting a throwaway regtest bitcoind…",
                 NodeMode::Local => {
                     "Starting the local regtest bitcoind (first start can take a moment)…"
@@ -46,6 +47,7 @@ pub fn draw(f: &mut Frame, app: &App, now: Instant) {
             },
         ),
         Phase::Opening => busy(f, rest, app, now, "Opening wallet…"),
+        Phase::Pick(modal) => modal.render(f, rest, &app.view(now)),
         Phase::Unlock(unlock) => unlock.render(f, rest, &app.theme),
         Phase::Onboarding(onboarding) => {
             onboarding.render(f, rest, &app.theme, now, app.loading_since())
@@ -61,6 +63,9 @@ pub fn draw(f: &mut Frame, app: &App, now: Instant) {
             f.render_widget(widgets::paragraph(lines), inner);
         }
         Phase::Ready => draw_ready(f, rest, app, now),
+    }
+    if app.confirm_copy.is_some() {
+        draw_copy_confirm(f, rest, app);
     }
     draw_toasts(f, rest, app, now);
 }
@@ -132,6 +137,41 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App, now: Instant) {
     .areas(area);
     f.render_widget(Paragraph::new(Line::from(spans)), left);
     f.render_widget(Paragraph::new(right), right_area);
+}
+
+/// "Copy the recovery words?" Asked every time, on every network.
+fn draw_copy_confirm(f: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let inner = widgets::modal(
+        f,
+        centered(area, 64, 9),
+        "Copy recovery words?",
+        Tone::Warning,
+        theme,
+    );
+    let lines = vec![
+        Line::from(Span::styled(
+            "Anyone who sees your clipboard can take the coins. Other apps and \
+             clipboard history can read it.",
+            theme.text(),
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!(
+                "It is cleared after {} s, or when you quit.",
+                app.config.clipboard_clear_secs
+            ),
+            theme.muted(),
+        )),
+        hint_line(
+            &[
+                ("y".into(), "copy".into()),
+                ("n/esc".into(), "cancel".into()),
+            ],
+            theme,
+        ),
+    ];
+    f.render_widget(widgets::paragraph(lines), inner);
 }
 
 /// ONLINE / OFFLINE / NO NODE, right-aligned in the header.

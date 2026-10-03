@@ -13,6 +13,7 @@
 pub mod anim;
 pub mod app;
 pub mod chain;
+pub mod clipboard;
 pub mod config;
 pub mod format;
 pub mod keymap;
@@ -53,6 +54,10 @@ pub struct TuiArgs {
     /// TUI settings file. Defaults to `<datadir>/tui.toml`.
     #[arg(long)]
     pub tui_config: Option<PathBuf>,
+    /// Word count new wallets start with (12, 15, 18, 21 or 24; changeable
+    /// on the setup screen). Overrides `mnemonic_words` in `tui.toml`.
+    #[arg(long, env = "WALLET_WORDS", value_parser = crate::parse_word_count)]
+    pub words: Option<usize>,
 }
 
 /// Which wallet the TUI opens, and whether it can switch to others.
@@ -63,6 +68,9 @@ pub struct Target {
     pub name: Option<String>,
     /// All named wallets; `None` with `--datadir` (no switching).
     pub wallets: Option<Wallets>,
+    /// No wallet was named and `dir` holds none: ask which one to open, or
+    /// what to call a new one, instead of creating `dir`.
+    pub pick: bool,
 }
 
 /// Run the TUI until the user quits. Quitting stops everything the TUI
@@ -75,20 +83,35 @@ pub fn run(
     rpc: RpcArgs,
     local: LocalNode,
 ) -> Result<()> {
+    // While picking, nothing belongs to a wallet yet, so settings and logs
+    // live next to the wallets instead of in a directory that may never be
+    // used.
+    let target = match &target.wallets {
+        Some(wallets) if target.pick => Target {
+            dir: DataDir::at(wallets.root().to_path_buf()),
+            name: None,
+            ..target
+        },
+        _ => target,
+    };
     let config_path = args
         .tui_config
         .clone()
         .unwrap_or_else(|| target.dir.path().join("tui.toml"));
-    let config = TuiConfig::load(&config_path)?;
+    let mut config = TuiConfig::load(&config_path)?;
+    if let Some(words) = args.words {
+        config.mnemonic_words = words;
+    }
     let theme = config.theme.build().map_err(anyhow::Error::msg)?;
 
     // Demo mode works in a temporary directory that disappears on exit;
     // `_keep_alive` holds it until the TUI closes.
     let mut _keep_alive: Option<Box<dyn std::any::Any>> = None;
     let node = if args.demo { NodeMode::Local } else { node };
-    if node == NodeMode::Local && network != Network::Regtest {
+    if matches!(node, NodeMode::Local | NodeMode::Polar) && network != Network::Regtest {
         bail!("a local node only runs regtest; drop --network or use --node external");
     }
+    let mut fallback = None;
     let (target, startup, connect) = if args.demo {
         let (tmp, connect) = throwaway_node()?;
         let dir = DataDir::at(tmp.path().join("wallet"));
@@ -97,10 +120,13 @@ pub fn run(
             dir,
             name: Some("demo".into()),
             wallets: None,
+            pick: false,
         };
         (target, StartupWallet::Demo, Some(connect))
     } else {
-        let startup = if session::exists(&target.dir) {
+        let startup = if target.pick && target.wallets.is_some() {
+            StartupWallet::Pick
+        } else if session::exists(&target.dir) {
             StartupWallet::Existing(session::stored_keys(&target.dir)?)
         } else {
             StartupWallet::Missing
@@ -108,6 +134,13 @@ pub fn run(
         let connect = match node {
             NodeMode::External => Some(chain::rpc(rpc, network)),
             NodeMode::Local => Some(chain::shared(local)),
+            NodeMode::Polar => {
+                fallback = Some(worker::Fallback {
+                    connect: chain::shared(local),
+                    wallets: Wallets::new(None, Network::Regtest),
+                });
+                Some(chain::polar(rpc))
+            }
             NodeMode::None => None,
         };
         (target, startup, connect)
@@ -129,12 +162,14 @@ pub fn run(
             progress_every: Duration::from_millis(50),
         },
         connect,
+        fallback,
     });
     let frame = config.frame();
     let mut app = App::new(network, startup, config, theme, Instant::now());
     app.node = node;
     app.wallet_name = wallet_name;
     app.can_switch = can_switch;
+    app.can_fallback = node == NodeMode::Polar;
 
     let mut terminal = ratatui::init();
     let result = event_loop(&mut terminal, &mut app, &worker, frame);
@@ -153,6 +188,7 @@ fn event_loop(
     worker: &WorkerHandle,
     frame: Duration,
 ) -> Result<()> {
+    let mut clipboard = clipboard::SystemClipboard::default();
     loop {
         let now = Instant::now();
         while let Some(event) = worker.try_recv() {
@@ -163,8 +199,11 @@ fn event_loop(
         for command in app.on_tick(now) {
             worker.send(command);
         }
+        app.run_clipboard(&mut clipboard, now);
         terminal.draw(|f| ui::draw(f, app, now))?;
         if app.should_quit {
+            app.on_quit();
+            app.run_clipboard(&mut clipboard, now);
             return Ok(());
         }
         if event::poll(frame)?
@@ -247,7 +286,25 @@ mod end_to_end {
         fn demo() -> Self {
             let tmp = tempfile::tempdir().unwrap();
             let dir = DataDir::at(tmp.path().join("w"));
-            Self::start(tmp, dir, StartupWallet::Demo, Some(chain::throwaway()))
+            Self::start(
+                tmp,
+                dir,
+                StartupWallet::Demo,
+                Some(chain::throwaway()),
+                None,
+            )
+        }
+
+        /// Named wallets under `root`, nothing named yet: starts at the
+        /// picker, like `wallet-cli --node local tui` on a fresh checkout.
+        fn named(root: tempfile::TempDir) -> Self {
+            let wallets = Wallets::new(Some(root.path().join("home")), Network::Regtest);
+            let dir = DataDir::at(wallets.root().to_path_buf());
+            let connect = chain::shared(LocalNode {
+                dir: wallets.root().join("node"),
+                port: free_port(),
+            });
+            Self::start(root, dir, StartupWallet::Pick, Some(connect), Some(wallets))
         }
 
         /// `--node local` on `root`: node data in `root/w/node`, persistent.
@@ -262,7 +319,7 @@ mod end_to_end {
                 dir: dir.path().join("node"),
                 port: free_port(),
             });
-            Self::start(root, dir, startup, Some(connect))
+            Self::start(root, dir, startup, Some(connect), None)
         }
 
         fn start(
@@ -270,7 +327,9 @@ mod end_to_end {
             dir: DataDir,
             startup: StartupWallet,
             connect: Option<chain::ChainFactory>,
+            wallets: Option<Wallets>,
         ) -> Self {
+            let can_switch = wallets.is_some();
             let config = TuiConfig {
                 refresh_secs: 0,
                 toast_secs: 1,
@@ -280,20 +339,22 @@ mod end_to_end {
                 network: Network::Regtest,
                 dir,
                 name: None,
-                wallets: None,
+                wallets,
                 config: WorkerConfig {
                     fallback_fee_rate: FeeRate::from_sat_per_vb_u32(2),
                     progress_every: Duration::ZERO,
                 },
                 connect,
+                fallback: None,
             });
-            let app = App::new(
+            let mut app = App::new(
                 Network::Regtest,
                 startup,
                 config,
                 theme::Theme::default(),
                 Instant::now(),
             );
+            app.can_switch = can_switch;
             Self {
                 app,
                 worker,
@@ -327,6 +388,37 @@ mod end_to_end {
             {
                 self.worker.send(c);
             }
+        }
+
+        fn press_ctrl(&mut self, ch: char) {
+            for c in self.app.on_key(
+                KeyEvent::new(KeyCode::Char(ch), KeyModifiers::CONTROL),
+                Instant::now(),
+            ) {
+                self.worker.send(c);
+            }
+        }
+
+        /// Run the setup screen with its defaults: new words, no password.
+        fn create_wallet(&mut self, name: &str) {
+            self.pump_until("setup screen", |a| {
+                matches!(a.phase, app::Phase::Onboarding(_))
+            });
+            assert_eq!(self.app.wallet_name.as_deref(), Some(name));
+            self.press(KeyCode::Enter); // create a new wallet
+            self.press(KeyCode::Enter); // words written down
+            self.press(KeyCode::Enter); // no password
+            self.pump_until("new wallet synced", |a| {
+                matches!(a.phase, app::Phase::Ready) && a.synced
+            });
+        }
+
+        /// Open the switcher and wait for its list.
+        fn open_switcher(&mut self) {
+            self.press(KeyCode::Char('w'));
+            self.pump_until("wallet list", |a| {
+                matches!(&a.modal, Some(modal::Modal::Wallets { list: Some(_), .. }))
+            });
         }
 
         fn type_text(&mut self, text: &str) {
@@ -448,6 +540,97 @@ mod end_to_end {
         let history = s.screen();
         assert!(history.contains(&pending.txid.to_string()), "{history}");
         assert!(history.contains("1 conf"));
+    }
+
+    #[test]
+    fn two_named_wallets_pay_each_other_through_the_ui() {
+        let mut s = Session::named(tempfile::tempdir().unwrap());
+
+        // Nothing exists yet, so the picker asks for a name right away.
+        s.pump_until("name prompt", |a| {
+            matches!(
+                &a.phase,
+                app::Phase::Pick(modal::Modal::Wallets {
+                    naming: Some(_),
+                    ..
+                })
+            )
+        });
+        s.type_text("Alice");
+        s.press(KeyCode::Enter);
+        s.create_wallet("alice");
+        s.press(KeyCode::Char('f'));
+        s.pump_until("faucet coins", |a| {
+            a.snapshot
+                .as_ref()
+                .is_some_and(|s| s.balance.confirmed > Amount::ZERO)
+        });
+
+        // A second wallet, named in the switcher.
+        s.open_switcher();
+        s.press(KeyCode::Char('n'));
+        s.type_text("bob");
+        s.press(KeyCode::Enter);
+        s.create_wallet("bob");
+        assert_eq!(s.confirmed(), Amount::ZERO);
+
+        // Back to alice (the list is sorted, bob is highlighted).
+        s.open_switcher();
+        s.press(KeyCode::Up);
+        s.press(KeyCode::Enter);
+        s.pump_until("alice open with her coins", |a| {
+            a.wallet_name.as_deref() == Some("alice")
+                && a.synced
+                && a.snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.balance.confirmed > Amount::ZERO)
+        });
+
+        // Pay bob by name: ctrl+w fills in his address.
+        s.press(KeyCode::Char('3'));
+        s.pump_until("fee estimate filled in", |a| {
+            a.toasts.iter().any(|t| t.text.contains("No fee data"))
+        });
+        s.press(KeyCode::Enter);
+        s.press_ctrl('w');
+        s.pump_until("bob's address", |a| {
+            a.toasts
+                .iter()
+                .any(|t| t.text.starts_with("Paying wallet bob"))
+        });
+        s.type_text("0.5btc");
+        s.press(KeyCode::Enter);
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while !s.screen().contains("Review") {
+            assert!(Instant::now() < deadline, "no review:\n{}", s.screen());
+            if let Some(event) = s.worker.try_recv() {
+                for c in s.app.on_event(event, Instant::now()) {
+                    s.worker.send(c);
+                }
+            }
+        }
+        s.press(KeyCode::Char('y'));
+        s.pump_until("sent", |a| {
+            a.toasts
+                .iter()
+                .any(|t| t.text.starts_with("Sent 50,000,000 sat"))
+        });
+        s.press(KeyCode::Char('m'));
+        s.pump_until("mined", |a| {
+            a.toasts.iter().any(|t| t.text.starts_with("Mined 1 block"))
+        });
+
+        // Bob sees it confirmed.
+        s.open_switcher();
+        s.press(KeyCode::Down);
+        s.press(KeyCode::Enter);
+        s.pump_until("bob paid", |a| {
+            a.wallet_name.as_deref() == Some("bob")
+                && a.synced
+                && a.snapshot
+                    .as_ref()
+                    .is_some_and(|s| s.balance.confirmed == Amount::from_sat(50_000_000))
+        });
     }
 
     #[test]

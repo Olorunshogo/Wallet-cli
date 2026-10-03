@@ -29,6 +29,8 @@ pub enum Action {
     SendSaved,
     /// Open the wallet switcher.
     Wallets,
+    /// Polar is down: use the local node and its wallets instead.
+    UseLocal,
 }
 
 /// When a binding is available.
@@ -40,6 +42,8 @@ pub enum Need {
     Mining,
     /// Only while online with payments waiting in the outbox.
     Outbox,
+    /// Only while Polar is unreachable.
+    Fallback,
 }
 
 /// What is currently possible, used to filter bindings.
@@ -49,6 +53,8 @@ pub struct Caps {
     pub mining: bool,
     /// Saved payments can be broadcast.
     pub outbox: bool,
+    /// Polar is unreachable and the local node can be used instead.
+    pub fallback: bool,
 }
 
 impl Caps {
@@ -57,6 +63,7 @@ impl Caps {
             Need::Nothing => true,
             Need::Mining => self.mining,
             Need::Outbox => self.outbox,
+            Need::Fallback => self.fallback,
         }
     }
 }
@@ -142,6 +149,14 @@ impl Default for Keymap {
                 Need::Outbox,
                 bind(KeyCode::Char('o'), Action::SendSaved, "o", "send saved"),
             ),
+            needs(
+                Need::Fallback,
+                bind(KeyCode::Char('L'), Action::UseLocal, "L", "use local node"),
+            ),
+            Binding {
+                needs: Need::Fallback,
+                ..bind(KeyCode::Char('l'), Action::UseLocal, "L", "use local node")
+            },
         ];
         for (i, digit) in ['1', '2', '3', '4', '5', '6', '7', '8', '9']
             .into_iter()
@@ -265,8 +280,11 @@ mod tests {
         let all = Keymap::default().all(Caps {
             mining: true,
             outbox: true,
+            fallback: true,
         });
         let digits = all.iter().filter(|(k, _)| k == "1-9").count();
         assert_eq!(digits, 1);
+        let local = all.iter().filter(|(k, _)| k == "L").count();
+        assert_eq!(local, 1, "l and L share one help line");
     }
 }

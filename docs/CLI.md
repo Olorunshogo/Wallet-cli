@@ -2,7 +2,7 @@
 
 Everything `wallet-cli` can do, how to run it, and how the pieces fit: named wallets, the shared regtest node, the `regtest.sh` script, configuration and scripting. For the interactive interface see [TUI.md](TUI.md).
 
-**Contents:** [Running it](#running-it) · [Your first two wallets](#your-first-two-wallets) · [Where chain data comes from](#where-chain-data-comes-from) · [The shared local node](#the-shared-local-node) · [Named wallets](#named-wallets) · [Command reference](#command-reference) · [The regtest script](#the-regtest-script) · [Configuration](#configuration) · [Output and scripting](#output-and-scripting) · [Data on disk](#data-on-disk) · [Troubleshooting](#troubleshooting)
+**Contents:** [Running it](#running-it) · [Your first two wallets](#your-first-two-wallets) · [Where chain data comes from](#where-chain-data-comes-from) · [Connecting to Polar](#connecting-to-polar) · [The shared local node](#the-shared-local-node) · [Named wallets](#named-wallets) · [Command reference](#command-reference) · [The regtest script](#the-regtest-script) · [Configuration](#configuration) · [Output and scripting](#output-and-scripting) · [Data on disk](#data-on-disk) · [Troubleshooting](#troubleshooting)
 
 ## Running it
 
@@ -21,38 +21,61 @@ This guide writes commands as `wallet-cli …`; read them as `cargo wallet …` 
 
 ## Your first two wallets
 
-Alice and Bob on one private regtest network, with nothing to install:
+Two wallets on one private regtest network, with nothing to install. Name them anything you like; `alice` and `bob` are just examples (`cargo alice` is short for `cargo wallet -w alice`).
 
 ```bash
-cp .env.example .env                       # then set WALLET_NODE=local in it (or add --node local below)
+cp .env.example .env                       # optional: regtest already uses the local node
 
-cargo alice init                           # Alice's wallet, fresh recovery words
-cargo bob init                             # Bob's wallet
-cargo alice --node local mine 101          # 101 blocks to Alice: her first reward becomes spendable
-cargo bob address                          # copy Bob's bcrt1… address
-cargo alice --node local send <bob's address> 250000
-cargo bob --node local sync                # Bob sees it, unconfirmed
-cargo alice --node local mine 1            # confirm it
-cargo bob --node local history             # Bob: +250,000 sat, confirmed
+cargo wallet -w alice init                 # a wallet called alice, fresh recovery words
+cargo wallet -w bob init                   # and one called bob
+cargo wallet -w alice mine 101             # 101 blocks to alice: her first reward becomes spendable
+cargo wallet -w bob address                # copy bob's bcrt1… address
+cargo wallet -w alice send <bob's address> 250000     # or 0.0025btc
+cargo wallet -w bob sync                   # bob sees it, unconfirmed
+cargo wallet -w alice mine 1               # confirm it
+cargo wallet -w bob history                # bob: +250,000 sat, confirmed
 ```
 
-Or in one go: `./scripts/regtest.sh demo` (see [The regtest script](#the-regtest-script)).
+Or in one go: `./scripts/regtest.sh demo savings shop` with your own names (see [The regtest script](#the-regtest-script)). For the same thing in the TUI, see [TUI.md](TUI.md#two-wallets-paying-each-other).
 
 Why 101 blocks: a mining reward can only be spent once it has 100 confirmations, so mining 101 makes the first one spendable.
 
 ## Where chain data comes from
 
-`--node` (or `WALLET_NODE`) applies to every command and the TUI:
+A wallet syncs by asking a Bitcoin Core node for blocks over RPC, and sends by handing it the signed transaction. So you always need a node; the question is only which one. `--node` (or `WALLET_NODE`) applies to every command and the TUI:
 
 | Mode | What it uses | Needs |
 |---|---|---|
-| `external` (default) | a Bitcoin Core you run, reached with `--rpc-url`, `--rpc-cookie` or `--rpc-user/--rpc-pass` | a running `bitcoind` |
-| `local` | the [shared local node](#the-shared-local-node): a regtest `bitcoind` this app runs for all your wallets | nothing (regtest only) |
+| `local` (default on regtest) | the [shared local node](#the-shared-local-node): a regtest `bitcoind` this app runs for all your wallets | nothing (regtest only) |
+| `polar` | [Polar](#connecting-to-polar)'s regtest node | Polar running (Docker) |
+| `external` (default otherwise) | a Bitcoin Core you run, reached with `--rpc-url`, `--rpc-cookie` or `--rpc-user/--rpc-pass` | a running `bitcoind` |
 | `none` | no node; commands that need one say so | nothing |
+
+**The default:** on regtest it is `local`, unless you set any `--rpc-*` option or `WALLET_RPC_*` variable; then it is `external`, because you pointed at a node of your own. `polar` is never chosen automatically; pass `--node polar` or set `WALLET_NODE=polar`. On signet, testnet and mainnet it is always `external`.
 
 Commands that work without a node: `init`, `restore`, `address`, `balance`, `history`, `utxos`, `status`, `descriptors`, `wallets`, and building or signing PSBTs offline. Commands that need one: `sync`, `send`, `bump-fee`, `mine`, `export-psbt`, `sign-psbt --broadcast`.
 
 **Your own Bitcoin Core:** start it with `bitcoind -regtest -daemon` (or `-signet`, `-testnet4`). The wallet finds it on the network's default port with the cookie in `~/.bitcoin/<network>/.cookie`. No Bitcoin Core installed? The build already downloaded one: `$(find target -path '*bitcoin-29.0/bin/bitcoind' | head -1) -regtest -daemon`.
+
+## Connecting to Polar
+
+[Polar](https://lightningpolar.com) runs a regtest network in Docker, including a Bitcoin Core node.
+
+1. In Polar, create a network with a bitcoind node and press **Start**.
+2. Use it: `cargo wallet --node polar -w alice sync` (or `WALLET_NODE=polar` in `.env`). Polar's defaults (`http://127.0.0.1:18443`, `polaruser`/`polarpass`) are filled in automatically; nothing else to set.
+3. If you changed Polar's port or login, click the bitcoind node, open **Connect**, and put its RPC host/port, username and password in `.env`:
+
+   ```bash
+   WALLET_RPC_URL=http://127.0.0.1:18443
+   WALLET_RPC_USER=polaruser
+   WALLET_RPC_PASS=polarpass
+   ```
+
+**Separate wallets:** Polar is its own regtest chain, different from the [local node](#the-shared-local-node)'s. `--node polar` wallets live in `.wallet/polar` instead of `.wallet/regtest`, so a wallet never shows the wrong chain's coins just because the node changed. The same name can exist in both without clashing (`cargo wallet --node polar -w alice` and `cargo wallet --node local -w alice` are different wallets).
+
+`mine` works against Polar too (it is a regtest node), and so do the TUI's `f` and `m` keys. Blocks you mine in Polar's UI show up in the wallet on its next sync.
+
+**If Polar is not reachable:** the error names the URL it tried and how to fix it (start Polar, check the port/login, or use `--node local` instead). In the TUI, press `L` to switch to the local node and its own wallets for that session; quit and restart to go back to Polar.
 
 ## The shared local node
 
@@ -103,7 +126,7 @@ Global options go anywhere on the line.
 | `-n, --network` | `WALLET_NETWORK` | `regtest` | `regtest`, `signet`, `testnet`, `testnet4`, `bitcoin` (also `mainnet`, `main`, `test`) |
 | `-w, --wallet` | `WALLET_NAME` | the default wallet | which named wallet |
 | `--datadir` | `WALLET_DATADIR` | | a wallet directory by path instead |
-| `--node` | `WALLET_NODE` | `external` | `external`, `local`, `none` |
+| `--node` | `WALLET_NODE` | `local` on regtest without `--rpc-*`, else `external` | `external`, `local`, `polar`, `none` |
 | `--node-dir` | `WALLET_NODE_DIR` | `.wallet/regtest/node` | local node data |
 | `--node-port` | `WALLET_NODE_PORT` | `18543` | local node RPC port |
 | `--rpc-url` | `WALLET_RPC_URL` | localhost, network port | your Bitcoin Core |
@@ -117,7 +140,7 @@ Global options go anywhere on the line.
 
 | Command | Does |
 |---|---|
-| `init [--words 12\|15\|18\|21\|24]` | create a wallet with fresh recovery words |
+| `init [--words 12\|15\|18\|21\|24]` | create a wallet with fresh recovery words (default from `WALLET_WORDS`, else 12) |
 | `restore --mnemonic "…" [--passphrase …] [--birthday N]` | rebuild a wallet from its words; `--birthday` skips older blocks on the first sync |
 | `wallets [list]` | list wallets |
 | `wallets create <name> [--words N]` | same as `-w <name> init` |
@@ -141,9 +164,9 @@ Global options go anywhere on the line.
 
 | Command | Does |
 |---|---|
-| `send <address> <sats> [--fee-rate N] [--target BLOCKS] [--selection bnb\|largest\|oldest] [--dry-run]` | build, sign and broadcast; the fee is estimated when `--fee-rate` is left out (1 sat/vB when the node has no data yet) |
+| `send <address> <amount> [--fee-rate N] [--target BLOCKS] [--selection bnb\|largest\|oldest] [--dry-run]` | build, sign and broadcast; the amount is sats (`250000`) or BTC with a suffix (`0.0025btc`); the fee is estimated when `--fee-rate` is left out (1 sat/vB when the node has no data yet) |
 | `bump-fee <txid> --fee-rate N` | replace an unconfirmed payment with a higher-fee version (RBF) |
-| `export-psbt <address> <sats> [--fee-rate N] [--output FILE]` | an unsigned PSBT for an offline or hardware signer |
+| `export-psbt <address> <amount> [--fee-rate N] [--output FILE]` | an unsigned PSBT for an offline or hardware signer |
 | `sign-psbt [--input FILE] [--broadcast]` | sign a PSBT; broadcast it or print the hex |
 
 ### Regtest
@@ -171,7 +194,8 @@ Global options go anywhere on the line.
 | `./scripts/regtest.sh reset` | stop it and delete the chain (asks) |
 | `./scripts/regtest.sh fund <wallet> [blocks]` | create the wallet if needed and mine to it (default 101) |
 | `./scripts/regtest.sh mine [blocks] [wallet]` | mine blocks (default 1, to alice) to confirm payments |
-| `./scripts/regtest.sh demo` | start the node, create alice and bob, fund alice, pay bob 250,000 sat, confirm, show bob's balance |
+| `./scripts/regtest.sh demo [payer] [payee]` | start the node, create both wallets (default names `alice` and `bob`), fund the payer, pay the payee 250,000 sat, confirm, sync the payee |
+| `./scripts/regtest.sh demo-tui [payer] [payee]` | print the step-by-step walkthrough for two TUIs in two terminals |
 | `./scripts/regtest.sh help` | this list |
 
 Wallet data goes in `./.wallet` of the directory you run it from. `WALLET_NODE_PORT` picks the port; `WALLET_CLI` points at a prebuilt `wallet-cli` instead of `cargo run`.
@@ -234,9 +258,9 @@ Plain-text recovery words are fine on regtest and signet. Use `--encrypt` for an
 | `no wallet yet` | Create one: `init`, or `wallets create <name>`. |
 | `no wallet named "default"; you have: alice, bob` | Name one with `-w alice`, or `wallets use alice`. |
 | `a wallet already exists` | `init` never overwrites keys. Use another name (`-w bob init`). |
-| `could not connect` | No node at the RPC URL. Start `bitcoind`, check `--rpc-url`/`--rpc-cookie`, or use `--node local`. |
+| `could not connect` / `no Bitcoin Core at …` | No node at the RPC URL. Start `bitcoind`, check `--rpc-url` and the cookie or user/password, or use `--node local`. For Polar, see [Connecting to Polar](#connecting-to-polar). |
 | `the local node did not start on port 18543` | The port is taken. Pick another: `WALLET_NODE_PORT=18643`. The error shows the end of the node's log. |
-| Alice pays Bob but Bob never sees it | They are on different chains. Use `--node local` for both (one shared node), or the same `--rpc-url`. |
+| One wallet pays another but the payee never sees it | They are on different chains. Use the local node for both (the regtest default), or the same `--rpc-url`. |
 | `insufficient funds` on regtest | Mine first: `-w <name> --node local mine 101`. |
 | A node keeps running after I'm done | It was started with `node start` (pinned). `wallet-cli node stop` or `./scripts/regtest.sh stop`. |
 | `refusing without confirmation; pass --yes` | `wallets remove` and `node reset` ask you to type a confirmation; in scripts pass `--yes`. |

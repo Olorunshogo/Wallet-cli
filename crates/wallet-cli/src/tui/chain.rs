@@ -15,7 +15,7 @@ pub trait ChainBackend: BlockSource + Broadcaster + FeeEstimator {}
 
 impl<T: BlockSource + Broadcaster + FeeEstimator + ?Sized> ChainBackend for T {}
 
-/// Produces blocks on demand. Only regtest demo backends implement it.
+/// Produces blocks on demand. Only regtest backends implement it.
 pub trait Miner {
     /// Mine `blocks` blocks paying their rewards to `to`.
     fn mine(&self, blocks: u32, to: &Address) -> Result<(), BoxError>;
@@ -25,7 +25,7 @@ pub trait Miner {
 pub struct Chain {
     /// Serves blocks, broadcasts and fee estimates.
     pub backend: Box<dyn ChainBackend>,
-    /// Present only on demo backends.
+    /// Present only on regtest backends.
     pub miner: Option<Box<dyn Miner>>,
     /// Shown in the header, e.g. "Bitcoin Core at http://127.0.0.1:18443".
     pub label: String,
@@ -40,18 +40,61 @@ pub type ChainFactory = Box<dyn FnMut() -> Result<Chain, BoxError> + Send>;
 
 pub use crate::node::NodeMode;
 
-/// Bitcoin Core over JSON-RPC, using the CLI's `--rpc-*` settings.
+/// Bitcoin Core over JSON-RPC, using the CLI's `--rpc-*` settings. This is
+/// also how Polar's regtest `bitcoind` is reached. On regtest the same node
+/// mines, so the faucet and mining keys work there too.
 pub fn rpc(args: RpcArgs, network: Network) -> ChainFactory {
-    Box::new(move || {
-        let label = format!("Bitcoin Core at {}", args.url(network));
-        let client = args.connect(network).map_err(BoxError::from)?;
-        Ok(Chain {
-            backend: Box::new(client),
-            miner: None,
-            label,
-            _keepalive: None,
-        })
+    reachable(args, network, "Bitcoin Core", |url, network, e| {
+        unreachable_hint(url, network, e)
     })
+}
+
+/// Polar's regtest bitcoind, with Polar's default RPC settings unless the
+/// `--rpc-*` settings override them.
+pub fn polar(args: RpcArgs) -> ChainFactory {
+    reachable(args.polar(), Network::Regtest, "Polar node", |url, _, e| {
+        crate::node::polar_unreachable(url, &crate::tui::format::chain(e))
+    })
+}
+
+/// A Bitcoin Core RPC backend that must answer before it counts as
+/// connected; `explain` turns a failure into what the user should do.
+fn reachable(
+    args: RpcArgs,
+    network: Network,
+    name: &'static str,
+    explain: fn(&str, Network, &dyn std::error::Error) -> String,
+) -> ChainFactory {
+    Box::new(move || {
+        let url = args.url(network);
+        let reach = || -> Result<Chain, BoxError> {
+            let client = args.connect(network).map_err(BoxError::from)?;
+            client.tip()?;
+            let miner: Option<Box<dyn Miner>> = (network == Network::Regtest)
+                .then(|| args.connect(network))
+                .transpose()?
+                .map(|c| Box::new(RpcMiner(c)) as Box<dyn Miner>);
+            Ok(Chain {
+                backend: Box::new(client),
+                miner,
+                label: format!("{name} at {url}"),
+                _keepalive: None,
+            })
+        };
+        reach().map_err(|e| explain(&url, network, e.as_ref()).into())
+    })
+}
+
+/// Why an external node could not be reached, and what to do about it.
+fn unreachable_hint(url: &str, network: Network, err: &dyn std::error::Error) -> String {
+    let cause = crate::tui::format::chain(err);
+    let fix = if network == Network::Regtest {
+        "start bitcoind -regtest, use --node local, or for Polar set \
+         WALLET_RPC_URL, WALLET_RPC_USER and WALLET_RPC_PASS"
+    } else {
+        "start your node, or set WALLET_RPC_URL and its cookie or user/password"
+    };
+    format!("no Bitcoin Core at {url} ({cause}); {fix}")
 }
 
 /// Mines through Bitcoin Core's `generatetoaddress` (regtest only).

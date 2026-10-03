@@ -52,6 +52,18 @@ pub struct WorkerSpec {
     pub config: WorkerConfig,
     /// Connects to the chain; `None` means work offline (`--node none`).
     pub connect: Option<ChainFactory>,
+    /// Where `UseLocalNode` switches to (with Polar).
+    pub fallback: Option<Fallback>,
+}
+
+/// The local node and its own wallets, to switch to when the configured
+/// node (Polar) is down. The wallets come along because each set only ever
+/// sees its own chain.
+pub struct Fallback {
+    /// Connects to the local node.
+    pub connect: ChainFactory,
+    /// The local node's wallets.
+    pub wallets: Wallets,
 }
 
 /// The wallet side of the TUI.
@@ -73,6 +85,8 @@ pub struct Worker {
     wallets: Option<Wallets>,
     /// Name of the open wallet.
     name: Option<String>,
+    /// Where `UseLocalNode` switches to.
+    fallback: Option<Fallback>,
 }
 
 impl Worker {
@@ -99,7 +113,35 @@ impl Worker {
             burn_address: None,
             wallets: None,
             name: None,
+            fallback: None,
         }
+    }
+
+    /// Allow switching to the local node and its wallets.
+    pub fn with_fallback(mut self, fallback: Option<Fallback>) -> Self {
+        self.fallback = fallback;
+        self
+    }
+
+    /// Leave the configured node for the local one: close the wallet, swap
+    /// the connection and the wallet set, then report the new connection.
+    fn use_local(&mut self) {
+        let Some(fallback) = self.fallback.take() else {
+            return self.fail(
+                Op::Wallets,
+                ErrorView::new("No local node to switch to", "Only available with Polar."),
+            );
+        };
+        self.wallet = None;
+        self.pending = None;
+        self.burn_address = None;
+        self.chain = None;
+        self.online = false;
+        self.connect = Some(fallback.connect);
+        self.dir = DataDir::at(fallback.wallets.root().to_path_buf());
+        self.wallets = Some(fallback.wallets);
+        self.name = None;
+        self.reconnect();
     }
 
     /// Enable switching between named wallets.
@@ -189,6 +231,8 @@ impl Worker {
             Command::Open(request) => self.open(request),
             Command::ListWallets => self.list_wallets(),
             Command::SwitchWallet { name } => self.switch(name),
+            Command::PayeeAddress { after } => self.payee(after),
+            Command::UseLocalNode => self.use_local(),
             command if self.wallet.is_none() => {
                 tracing::warn!(?command, "ignored: wallet not open");
                 self.fail(
@@ -260,6 +304,53 @@ impl Worker {
                 ErrorView::new(
                     "Switching unavailable",
                     "This wallet was opened by path (--datadir) or is the demo.",
+                ),
+            ),
+        }
+    }
+
+    /// Another wallet's next unused receive address. It is opened
+    /// watch-only, the same as `wallet-cli -w <name> address` from another
+    /// terminal, so this works while that wallet is open elsewhere.
+    fn payee(&mut self, after: Option<String>) {
+        let Some(wallets) = self.wallets.clone() else {
+            return self.fail(
+                Op::Payee,
+                ErrorView::new(
+                    "No other wallets",
+                    "Paying a wallet by name needs named wallets (not --datadir or --demo).",
+                ),
+            );
+        };
+        let others: Vec<String> = wallets
+            .names()
+            .into_iter()
+            .filter(|n| Some(n) != self.name.as_ref())
+            .collect();
+        let next = after
+            .and_then(|a| others.iter().find(|n| **n > a).cloned())
+            .or_else(|| others.first().cloned());
+        let Some(name) = next else {
+            return self.fail(
+                Op::Payee,
+                ErrorView::new(
+                    "No other wallets",
+                    "Press esc, then w and n to create one, or paste an address.",
+                ),
+            );
+        };
+        let address = session::open(&wallets.dir(&name), self.network, None)
+            .and_then(|mut w| w.new_address().map_err(Into::into));
+        match address {
+            Ok(info) => self.emit(WorkerEvent::PayeeAddress {
+                name,
+                address: info.address.to_string(),
+            }),
+            Err(e) => self.fail(
+                Op::Payee,
+                ErrorView::new(
+                    format!("Could not read wallet {name}"),
+                    format::chain(e.as_ref()),
                 ),
             ),
         }
@@ -773,7 +864,8 @@ fn run(spec: WorkerSpec, commands: Receiver<Command>, events: Sender<WorkerEvent
         spec.config,
         events,
     )
-    .with_wallets(spec.wallets, spec.name);
+    .with_wallets(spec.wallets, spec.name)
+    .with_fallback(spec.fallback);
     worker.reconnect();
     for command in commands {
         if !worker.handle(command) {
@@ -1384,6 +1476,107 @@ pub(crate) mod tests {
             list[0].last_balance_sat.is_some(),
             "balance recorded on open"
         );
+    }
+    /// A `MockChain` behind a `Mutex` instead of an `Rc`, so it can be moved
+    /// into a `ChainFactory` closure (which must be `Send`).
+    struct SendMock(std::sync::Mutex<MockChain>);
+
+    impl BlockSource for SendMock {
+        fn tip(&self) -> Result<BlockId, SourceError> {
+            self.0.lock().unwrap().tip()
+        }
+        fn block_hash(&self, h: u32) -> Result<wallet::bitcoin::BlockHash, SourceError> {
+            self.0.lock().unwrap().block_hash(h)
+        }
+        fn block(&self, hash: &wallet::bitcoin::BlockHash) -> Result<Block, SourceError> {
+            self.0.lock().unwrap().block(hash)
+        }
+        fn mempool(&self) -> Result<Vec<(wallet::bitcoin::Transaction, u64)>, SourceError> {
+            self.0.lock().unwrap().mempool()
+        }
+    }
+
+    impl Broadcaster for SendMock {
+        fn broadcast(&self, tx: &wallet::bitcoin::Transaction) -> Result<Txid, BroadcastError> {
+            self.0.lock().unwrap().broadcast(tx)
+        }
+    }
+
+    impl FeeEstimator for SendMock {
+        fn estimate_fee_rate(&self, target: u16) -> Result<FeeRate, FeeEstimateError> {
+            self.0.lock().unwrap().estimate_fee_rate(target)
+        }
+    }
+
+    #[test]
+    fn use_local_node_switches_connection_and_wallets() {
+        // The configured node (standing in for Polar) never connects.
+        let dir = tempfile::tempdir().unwrap();
+        let polar_wallets = Wallets::new(Some(dir.path().join("polar")), Network::Regtest);
+        let (tx, rx) = mpsc::channel();
+        let config = WorkerConfig {
+            fallback_fee_rate: FeeRate::from_sat_per_vb_u32(3),
+            progress_every: Duration::ZERO,
+        };
+        let connect: ChainFactory = Box::new(|| Err("no Polar here".into()));
+        let local_wallets = Wallets::new(Some(dir.path().join("local")), Network::Regtest);
+        let fallback = Fallback {
+            connect: Box::new(|| {
+                Ok(Chain {
+                    backend: Box::new(SendMock(std::sync::Mutex::new(MockChain::new(
+                        Network::Regtest,
+                    )))),
+                    miner: None,
+                    label: "local".into(),
+                    _keepalive: None,
+                })
+            }),
+            wallets: local_wallets.clone(),
+        };
+        let mut worker = Worker::new(
+            None,
+            Some(connect),
+            polar_wallets.dir("alice"),
+            Network::Regtest,
+            config,
+            tx,
+        )
+        .with_wallets(Some(polar_wallets.clone()), Some("alice".into()))
+        .with_fallback(Some(fallback));
+        worker.reconnect();
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(matches!(
+            connection(&events),
+            Some(Connection::Offline { retrying: true, .. })
+        ));
+
+        worker.handle(Command::UseLocalNode);
+        let events: Vec<_> = rx.try_iter().collect();
+        assert!(matches!(
+            connection(&events),
+            Some(Connection::Online { .. })
+        ));
+        assert_eq!(
+            worker.wallets.as_ref().unwrap().root(),
+            local_wallets.root()
+        );
+        assert_eq!(worker.name, None, "back to the picker, not a Polar name");
+
+        // A second UseLocalNode has nothing left to fall back to.
+        let events = worker_fail_on_second_use_local(&mut worker, &rx);
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, WorkerEvent::Failed { .. }))
+        );
+    }
+
+    fn worker_fail_on_second_use_local(
+        worker: &mut Worker,
+        rx: &Receiver<WorkerEvent>,
+    ) -> Vec<WorkerEvent> {
+        worker.handle(Command::UseLocalNode);
+        rx.try_iter().collect()
     }
 
     #[test]

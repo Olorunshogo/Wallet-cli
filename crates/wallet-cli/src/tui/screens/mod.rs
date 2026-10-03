@@ -20,6 +20,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::Rect;
 use wallet::bitcoin::{Network, Txid};
 
+use super::clipboard::ClipRequest;
 use super::config::TuiConfig;
 use super::message::{Command, Snapshot, WorkerEvent};
 use super::modal::Modal;
@@ -40,6 +41,8 @@ pub struct Ctx<'a> {
     pub notices: &'a mut Vec<(Tone, String)>,
     /// Open a dialog.
     pub modal: &'a mut Option<Modal>,
+    /// Text to put on the clipboard.
+    pub copies: &'a mut Vec<ClipRequest>,
     /// Current time.
     pub now: Instant,
 }
@@ -53,6 +56,16 @@ impl Ctx<'_> {
     /// Show a notification.
     pub fn notify(&mut self, tone: Tone, text: impl Into<String>) {
         self.notices.push((tone, text.into()));
+    }
+
+    /// Copy text that is not secret (secrets go through the app, which asks
+    /// first and clears them again).
+    pub fn copy(&mut self, text: String, what: &'static str) {
+        self.copies.push(ClipRequest::Copy {
+            text: text.into(),
+            what,
+            secret: false,
+        });
     }
 }
 
@@ -89,6 +102,10 @@ pub struct View<'a> {
     pub chain_label: &'a str,
     /// Whether the node can be reached.
     pub online: bool,
+    /// Why the node cannot be reached, while offline.
+    pub offline_reason: Option<&'a str>,
+    /// Whether other named wallets can be opened or created (`w`).
+    pub can_switch: bool,
     /// Payments waiting in the outbox.
     pub outbox: usize,
 }

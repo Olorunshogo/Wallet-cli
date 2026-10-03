@@ -146,6 +146,8 @@ pub struct Onboarding {
     length: MnemonicLength,
     /// Mainnet wallets must be encrypted.
     require_password: bool,
+    /// Name of the wallet being set up, for named wallets.
+    name: Option<String>,
 }
 
 impl Onboarding {
@@ -156,7 +158,14 @@ impl Onboarding {
             banner: None,
             length,
             require_password: network == Network::Bitcoin,
+            name: None,
         }
+    }
+
+    /// Set up the wallet called `name`.
+    pub fn named(mut self, name: Option<String>) -> Self {
+        self.name = name;
+        self
     }
 
     /// Name of the current step.
@@ -169,6 +178,28 @@ impl Onboarding {
             Step::Protect { .. } => "protect",
             Step::Creating => "creating",
         }
+    }
+
+    /// The recovery words on screen right now, for copying.
+    pub fn shown_words(&self) -> Option<&str> {
+        match &self.step {
+            Step::ShowWords { words } => Some(words.as_str()),
+            _ => None,
+        }
+    }
+
+    /// The word count new words are generated with.
+    #[cfg(test)]
+    pub fn length(&self) -> MnemonicLength {
+        self.length
+    }
+
+    /// Move to the previous (`-1`) or next (`+1`) word count, wrapping.
+    fn step_length(&mut self, by: isize) {
+        let all = MnemonicLength::ALL;
+        let at = all.iter().position(|l| *l == self.length).unwrap_or(0) as isize;
+        let len = all.len() as isize;
+        self.length = all[((at + by).rem_euclid(len)) as usize];
     }
 
     /// Creating failed; go back to the start with the reason.
@@ -225,6 +256,10 @@ impl Onboarding {
             },
             Step::ShowWords { words } => match key.code {
                 KeyCode::Char('g') => self.fresh_words().map(|words| Step::ShowWords { words }),
+                KeyCode::Left | KeyCode::Right => {
+                    self.step_length(if key.code == KeyCode::Left { -1 } else { 1 });
+                    self.fresh_words().map(|words| Step::ShowWords { words })
+                }
                 KeyCode::Esc => Some(Step::Choose { selected: 0 }),
                 KeyCode::Enter => Some(Self::protect(KeySource::mnemonic(words.as_str()), None)),
                 _ => None,
@@ -362,13 +397,11 @@ impl Onboarding {
         }
         match &self.step {
             Step::Choose { selected } => {
-                let mut lines = vec![
-                    Line::from(Span::styled(
-                        "No wallet in this data directory yet.",
-                        theme.text(),
-                    )),
-                    Line::raw(""),
-                ];
+                let intro = match &self.name {
+                    Some(name) => format!("New wallet \"{name}\": create fresh keys or restore."),
+                    None => "No wallet in this data directory yet.".to_string(),
+                };
+                let mut lines = vec![Line::from(Span::styled(intro, theme.text())), Line::raw("")];
                 for (i, choice) in CHOICES.iter().enumerate() {
                     let style = if i == *selected {
                         theme.selected()
@@ -420,11 +453,25 @@ impl Onboarding {
                             .collect::<Vec<_>>(),
                     ));
                 }
+                let mut counts = vec![Span::styled("Words  ‹ ", theme.muted())];
+                for length in MnemonicLength::ALL {
+                    let text = format!(" {} ", length.words());
+                    counts.push(if length == self.length {
+                        Span::styled(text, theme.selected())
+                    } else {
+                        Span::styled(text, theme.muted())
+                    });
+                }
+                counts.push(Span::styled(" ›", theme.muted()));
                 lines.extend([
+                    Line::raw(""),
+                    Line::from(counts),
                     Line::raw(""),
                     hint_line(
                         &[
                             ("enter".into(), "I wrote them down".into()),
+                            ("←→".into(), "word count".into()),
+                            ("c".into(), "copy".into()),
                             ("g".into(), "new words".into()),
                             ("esc".into(), "back".into()),
                         ],
@@ -552,6 +599,38 @@ mod tests {
             })))
         ));
         assert_eq!(o.step_name(), "creating");
+    }
+
+    #[test]
+    fn left_right_cycle_the_word_count_and_regenerate() {
+        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Regtest);
+        o.on_key(key(KeyCode::Enter));
+        assert_eq!(o.length(), MnemonicLength::Words12);
+
+        o.on_key(key(KeyCode::Right));
+        assert_eq!(o.length(), MnemonicLength::Words15);
+        let Step::ShowWords { words } = &o.step else {
+            unreachable!()
+        };
+        assert_eq!(words.split(' ').count(), 15);
+
+        o.on_key(key(KeyCode::Left));
+        o.on_key(key(KeyCode::Left));
+        assert_eq!(o.length(), MnemonicLength::Words24, "wraps around");
+        let Step::ShowWords { words } = &o.step else {
+            unreachable!()
+        };
+        assert_eq!(words.split(' ').count(), 24);
+    }
+
+    #[test]
+    fn shown_words_are_available_only_on_the_words_step() {
+        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Regtest);
+        assert!(o.shown_words().is_none(), "still choosing create/restore");
+        o.on_key(key(KeyCode::Enter));
+        assert!(o.shown_words().is_some());
+        o.on_key(key(KeyCode::Enter));
+        assert!(o.shown_words().is_none(), "past the words step");
     }
 
     #[test]

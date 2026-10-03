@@ -7,12 +7,14 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use wallet::KeySource;
 use wallet::bitcoin::{Amount, Network, Txid};
+use zeroize::Zeroizing;
 
 use super::anim::{self, Tween};
 use super::chain::NodeMode;
+use super::clipboard::{ClipRequest, Clipboard, Via};
 use super::config::TuiConfig;
 use super::format::{self, ErrorView};
 use super::keymap::{Action, Caps, Keymap};
@@ -31,12 +33,17 @@ pub enum StartupWallet {
     Existing(StoredKeys),
     /// Demo mode: create a throwaway wallet automatically.
     Demo,
+    /// No wallet was named and the default one does not exist: let the
+    /// user pick a wallet or name a new one.
+    Pick,
 }
 
 /// Which part of the interface is showing.
 pub enum Phase {
     /// Waiting for the chain backend.
     Connecting,
+    /// Picking a wallet, or naming a new one, before anything is open.
+    Pick(Modal),
     /// Asking for the password.
     Unlock(Unlock),
     /// Create / restore wizard (boxed: it is much larger than the others).
@@ -97,6 +104,8 @@ pub struct App {
     pub wallet_name: Option<String>,
     /// Whether other named wallets can be opened (`w`).
     pub can_switch: bool,
+    /// Polar mode: the local node can be used instead while Polar is down.
+    pub can_fallback: bool,
     /// Node reachability; `None` until the worker's first report.
     pub connection: Option<Connection>,
     /// Payments signed while offline and waiting to be broadcast.
@@ -125,6 +134,12 @@ pub struct App {
     pub modal: Option<Modal>,
     /// Set when the user quits.
     pub should_quit: bool,
+    /// Recovery words waiting for "copy? y/n".
+    pub confirm_copy: Option<Zeroizing<String>>,
+    /// Clipboard work for the event loop.
+    clip_requests: Vec<ClipRequest>,
+    /// Recovery words on the clipboard, and when they were copied.
+    copied_secret: Option<(Instant, Zeroizing<String>)>,
     startup: Option<StartupWallet>,
     /// True from a failed sync until the next successful one, so background
     /// retries do not repeat the same notification.
@@ -158,6 +173,7 @@ impl App {
             },
             wallet_name: None,
             can_switch: false,
+            can_fallback: false,
             connection: None,
             outbox: 0,
             screens: screens::all(network, &config),
@@ -175,6 +191,9 @@ impl App {
             toasts: Vec::new(),
             modal: None,
             should_quit: false,
+            confirm_copy: None,
+            clip_requests: Vec::new(),
+            copied_secret: None,
             startup: Some(startup),
             sync_failing: false,
             tweens: [Tween::at(0, now); 3],
@@ -198,6 +217,8 @@ impl App {
                 Some(Connection::Online { can_mine: true, .. })
             ),
             outbox: self.online() && self.outbox > 0,
+            fallback: self.can_fallback
+                && matches!(self.connection, Some(Connection::Offline { .. })),
         }
     }
 
@@ -241,6 +262,11 @@ impl App {
             flashes: &self.flashes,
             chain_label: &self.chain_label,
             online: self.online(),
+            offline_reason: match &self.connection {
+                Some(Connection::Offline { reason, .. }) => Some(reason),
+                _ => None,
+            },
+            can_switch: self.can_switch,
             outbox: self.outbox,
         }
     }
@@ -253,12 +279,46 @@ impl App {
             self.should_quit = true;
             return Vec::new();
         }
+        if let Some(words) = self.confirm_copy.take() {
+            match key.code {
+                KeyCode::Char('y' | 'Y') => self.clip_requests.push(ClipRequest::Copy {
+                    text: words,
+                    what: "recovery words",
+                    secret: true,
+                }),
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {}
+                _ => self.confirm_copy = Some(words),
+            }
+            return Vec::new();
+        }
+        if is_plain(key, 'c')
+            && let Some(words) = self.words_on_screen()
+        {
+            self.confirm_copy = Some(Zeroizing::new(words.to_string()));
+            return Vec::new();
+        }
+        let fallback = self.caps().fallback;
         match &mut self.phase {
             Phase::Connecting | Phase::Opening | Phase::Fatal(_) => {
                 if matches!(key.code, KeyCode::Char('q') | KeyCode::Esc) {
                     self.should_quit = true;
                 }
                 Vec::new()
+            }
+            Phase::Pick(Modal::Wallets { naming: None, .. })
+                if matches!(key.code, KeyCode::Char('l' | 'L')) && fallback =>
+            {
+                self.use_local(now)
+            }
+            Phase::Pick(modal) => {
+                let mut commands = Vec::new();
+                // Closing the picker without choosing leaves nothing to show.
+                if let Outcome::Close = modal.on_key(key, &mut commands, &self.config)
+                    && commands.is_empty()
+                {
+                    self.should_quit = true;
+                }
+                commands
             }
             Phase::Unlock(unlock) => unlock.on_key(key).into_iter().collect(),
             Phase::Onboarding(onboarding) => onboarding.on_key(key).into_iter().collect(),
@@ -339,6 +399,7 @@ impl App {
                 });
                 vec![Command::ListWallets]
             }
+            Some(Action::UseLocal) => self.use_local(now),
             Some(Action::SendSaved) => {
                 let s = if self.outbox == 1 { "" } else { "s" };
                 self.notify(
@@ -367,6 +428,7 @@ impl App {
     ) -> Vec<Command> {
         let mut commands = Vec::new();
         let mut notices = Vec::new();
+        let mut copies = Vec::new();
         let mut cx = Ctx {
             snapshot: self.snapshot.as_ref(),
             config: &self.config,
@@ -374,13 +436,74 @@ impl App {
             commands: &mut commands,
             notices: &mut notices,
             modal: &mut self.modal,
+            copies: &mut copies,
             now,
         };
         f(self.screens[index].as_mut(), &mut cx);
+        self.clip_requests.extend(copies);
         for (tone, text) in notices {
             self.notify(tone, text, now);
         }
         commands
+    }
+
+    // === Clipboard
+
+    /// Recovery words currently on screen, which `c` offers to copy.
+    fn words_on_screen(&self) -> Option<&str> {
+        match &self.phase {
+            Phase::Onboarding(onboarding) => onboarding.shown_words(),
+            // The demo welcome dialog is shown as early as `Opening`, since
+            // demo mode skips onboarding.
+            _ => match &self.modal {
+                Some(Modal::Welcome { mnemonic }) => Some(mnemonic.as_str()),
+                _ => None,
+            },
+        }
+    }
+
+    /// Quitting: take copied recovery words off the clipboard now rather
+    /// than leave them for a clipboard manager to keep.
+    pub fn on_quit(&mut self) {
+        if let Some((_, text)) = self.copied_secret.take() {
+            self.clip_requests.push(ClipRequest::Clear { text });
+        }
+    }
+
+    /// Run queued clipboard work. Called by the event loop between frames.
+    pub fn run_clipboard(&mut self, clipboard: &mut dyn Clipboard, now: Instant) {
+        for request in std::mem::take(&mut self.clip_requests) {
+            match request {
+                ClipRequest::Copy { text, what, secret } => match clipboard.set(&text) {
+                    Ok(via) => {
+                        let mut message = format!("Copied the {what}");
+                        if secret {
+                            message.push_str(&format!(
+                                "; the clipboard is cleared in {} s",
+                                self.config.clipboard_clear_secs
+                            ));
+                            self.copied_secret = Some((now, text));
+                        }
+                        if via == Via::Terminal {
+                            message.push_str(
+                                " (sent through the terminal; if pasting gives nothing, \
+                                 your terminal does not support it)",
+                            );
+                        }
+                        self.notify(Tone::Success, message, now);
+                    }
+                    Err(e) => {
+                        let hint = if secret {
+                            "; write them down instead"
+                        } else {
+                            ""
+                        };
+                        self.notify(Tone::Error, format!("Could not copy: {e}{hint}"), now);
+                    }
+                },
+                ClipRequest::Clear { text } => clipboard.clear_if(&text),
+            }
+        }
     }
 
     // === Worker events
@@ -428,13 +551,21 @@ impl App {
                 list: wallets,
                 current,
             } => {
+                let picker = match &mut self.phase {
+                    Phase::Pick(modal) => Some(modal),
+                    _ => self.modal.as_mut(),
+                };
                 if let Some(Modal::Wallets {
                     list,
                     current: open,
                     selected,
-                    ..
-                }) = &mut self.modal
+                    naming,
+                }) = picker
                 {
+                    // Nothing to pick yet: go straight to naming one.
+                    if wallets.is_empty() && naming.is_none() {
+                        *naming = Some(Modal::name_field(Vec::new()));
+                    }
                     *selected = current
                         .as_ref()
                         .and_then(|c| wallets.iter().position(|w| &w.name == c))
@@ -532,7 +663,9 @@ impl App {
                 self.notify(Tone::Info, format!("Mined {blocks} block{s}"), now);
             }
             WorkerEvent::Failed { op, error } => self.failed(*op, error, now),
-            WorkerEvent::FeeEstimate { .. } | WorkerEvent::Preview(_) => {}
+            WorkerEvent::FeeEstimate { .. }
+            | WorkerEvent::Preview(_)
+            | WorkerEvent::PayeeAddress { .. } => {}
         }
         if matches!(self.phase, Phase::Ready) {
             for i in 0..self.screens.len() {
@@ -545,6 +678,47 @@ impl App {
     /// Another wallet was selected: forget the old one's state and get the
     /// new one open (unlock or set up first if needed).
     fn switched(&mut self, name: String, kind: SwitchKind, now: Instant) {
+        self.forget_wallet(now);
+        self.phase = match kind {
+            SwitchKind::Opening => Phase::Opening,
+            SwitchKind::Locked => Phase::Unlock(Unlock::default()),
+            SwitchKind::New => Phase::Onboarding(Box::new(
+                Onboarding::new(self.config.mnemonic_length(), self.network)
+                    .named(Some(name.clone())),
+            )),
+        };
+        let what = match kind {
+            SwitchKind::New => format!("Creating wallet {name}"),
+            _ => format!("Switched to {name}"),
+        };
+        self.notify(Tone::Info, what, now);
+        self.wallet_name = Some(name);
+    }
+
+    /// Polar is down and the user asked for the local node: its wallets are
+    /// a separate set, so start again at the wallet picker.
+    fn use_local(&mut self, now: Instant) -> Vec<Command> {
+        self.can_fallback = false;
+        self.node = NodeMode::Local;
+        self.forget_wallet(now);
+        self.wallet_name = None;
+        self.chain_label.clear();
+        self.phase = Phase::Pick(Modal::Wallets {
+            list: None,
+            current: None,
+            selected: 0,
+            naming: None,
+        });
+        self.notify(
+            Tone::Info,
+            "Using the local node and its wallets (Polar wallets stay in .wallet/polar)",
+            now,
+        );
+        vec![Command::UseLocalNode, Command::ListWallets]
+    }
+
+    /// Drop everything shown about the open wallet.
+    fn forget_wallet(&mut self, now: Instant) {
         self.snapshot = None;
         self.synced = false;
         self.outbox = 0;
@@ -558,20 +732,6 @@ impl App {
         self.sync_failing = false;
         self.loading_since = now;
         self.modal = None;
-        self.phase = match kind {
-            SwitchKind::Opening => Phase::Opening,
-            SwitchKind::Locked => Phase::Unlock(Unlock::default()),
-            SwitchKind::New => Phase::Onboarding(Box::new(Onboarding::new(
-                self.config.mnemonic_length(),
-                self.network,
-            ))),
-        };
-        let what = match kind {
-            SwitchKind::New => format!("Creating wallet {name}"),
-            _ => format!("Switched to {name}"),
-        };
-        self.notify(Tone::Info, what, now);
-        self.wallet_name = Some(name);
     }
 
     /// The node became reachable or unreachable.
@@ -597,7 +757,12 @@ impl App {
                     } else {
                         "No node configured"
                     };
-                    self.notify(Tone::Warning, format!("{what}: {reason}"), now);
+                    let tip = if self.can_fallback {
+                        " Press L to use the local node instead."
+                    } else {
+                        ""
+                    };
+                    self.notify(Tone::Warning, format!("{what}: {reason}.{tip}"), now);
                 }
                 if was_online && matches!(self.sync, SyncState::Running { .. }) {
                     self.sync = SyncState::Idle {
@@ -633,11 +798,20 @@ impl App {
                     password: None,
                 }))]
             }
+            Some(StartupWallet::Pick) => {
+                self.phase = Phase::Pick(Modal::Wallets {
+                    list: None,
+                    current: None,
+                    selected: 0,
+                    naming: None,
+                });
+                vec![Command::ListWallets]
+            }
             Some(StartupWallet::Missing) => {
-                self.phase = Phase::Onboarding(Box::new(Onboarding::new(
-                    self.config.mnemonic_length(),
-                    self.network,
-                )));
+                self.phase = Phase::Onboarding(Box::new(
+                    Onboarding::new(self.config.mnemonic_length(), self.network)
+                        .named(self.wallet_name.clone()),
+                ));
                 Vec::new()
             }
             Some(StartupWallet::Existing(StoredKeys::Encrypted)) => {
@@ -731,6 +905,13 @@ impl App {
     /// Advance timers: expire notifications, reconnect when offline,
     /// auto-sync when online.
     pub fn on_tick(&mut self, now: Instant) -> Vec<Command> {
+        if let Some((since, _)) = &self.copied_secret
+            && now.saturating_duration_since(*since) >= self.config.clipboard_clear()
+            && let Some((_, text)) = self.copied_secret.take()
+        {
+            self.clip_requests.push(ClipRequest::Clear { text });
+            self.notify(Tone::Info, "Recovery words cleared from the clipboard", now);
+        }
         let ttl = Duration::from_secs(self.config.toast_secs);
         self.toasts
             .retain(|t| !anim::lifecycle(t.created, ttl, now).expired);
@@ -768,6 +949,11 @@ impl App {
         }
         Vec::new()
     }
+}
+
+/// `key` is the letter `ch` with no modifier held.
+fn is_plain(key: KeyEvent, ch: char) -> bool {
+    key.code == KeyCode::Char(ch) && key.modifiers.difference(KeyModifiers::SHIFT).is_empty()
 }
 
 #[cfg(test)]
@@ -1353,5 +1539,114 @@ mod tests {
             [Command::BumpFee { fee_rate, .. }] if *fee_rate == FeeRate::from_sat_per_vb_u32(7)
         ));
         assert!(app.modal.is_none());
+    }
+
+    #[test]
+    fn copying_recovery_words_asks_first_then_clears_after_the_timeout() {
+        use super::super::clipboard::tests::FakeClipboard;
+
+        let now = Instant::now();
+        let mut app = App::new(
+            Network::Regtest,
+            StartupWallet::Demo,
+            TuiConfig::default(),
+            Theme::default(),
+            now,
+        );
+        app.on_event(
+            WorkerEvent::Connection(Connection::Online {
+                label: "demo".into(),
+                can_mine: true,
+            }),
+            now,
+        );
+        assert!(matches!(app.modal, Some(Modal::Welcome { .. })));
+
+        // `c` asks for confirmation; anything but y/n/esc leaves it open.
+        app.on_key(key(KeyCode::Char('c')), now);
+        assert!(app.confirm_copy.is_some());
+        app.on_key(key(KeyCode::Char('z')), now);
+        assert!(app.confirm_copy.is_some(), "not a yes or a no");
+        app.on_key(key(KeyCode::Char('y')), now);
+        assert!(app.confirm_copy.is_none());
+
+        let mut clip = FakeClipboard::default();
+        app.run_clipboard(&mut clip, now);
+        assert!(clip.text.is_some(), "copied after confirming");
+        assert!(
+            app.toasts.iter().any(|t| t.text.contains("Copied")),
+            "{:?}",
+            app.toasts
+        );
+
+        // Not cleared before the configured delay.
+        let before = now + app.config.clipboard_clear() - Duration::from_millis(1);
+        app.on_tick(before);
+        app.run_clipboard(&mut clip, before);
+        assert!(clip.text.is_some(), "too soon");
+
+        // Cleared once it elapses.
+        let after = now + app.config.clipboard_clear() + Duration::from_millis(1);
+        app.on_tick(after);
+        app.run_clipboard(&mut clip, after);
+        assert_eq!(clip.text, None);
+        assert_eq!(clip.clears, 1);
+    }
+
+    #[test]
+    fn declining_the_copy_prompt_copies_nothing() {
+        use super::super::clipboard::tests::FakeClipboard;
+
+        let now = Instant::now();
+        let mut app = App::new(
+            Network::Regtest,
+            StartupWallet::Demo,
+            TuiConfig::default(),
+            Theme::default(),
+            now,
+        );
+        app.on_event(
+            WorkerEvent::Connection(Connection::Online {
+                label: "demo".into(),
+                can_mine: true,
+            }),
+            now,
+        );
+        app.on_key(key(KeyCode::Char('c')), now);
+        app.on_key(key(KeyCode::Char('n')), now);
+        assert!(app.confirm_copy.is_none());
+        let mut clip = FakeClipboard::default();
+        app.run_clipboard(&mut clip, now);
+        assert_eq!(clip.text, None);
+    }
+
+    #[test]
+    fn quitting_clears_a_copied_secret_right_away() {
+        use super::super::clipboard::tests::FakeClipboard;
+
+        let now = Instant::now();
+        let mut app = App::new(
+            Network::Regtest,
+            StartupWallet::Demo,
+            TuiConfig::default(),
+            Theme::default(),
+            now,
+        );
+        app.on_event(
+            WorkerEvent::Connection(Connection::Online {
+                label: "demo".into(),
+                can_mine: true,
+            }),
+            now,
+        );
+        app.on_key(key(KeyCode::Char('c')), now);
+        app.on_key(key(KeyCode::Char('y')), now);
+        let mut clip = FakeClipboard::default();
+        app.run_clipboard(&mut clip, now);
+        assert!(clip.text.is_some());
+
+        app.on_quit();
+        app.run_clipboard(&mut clip, now);
+        assert_eq!(clip.text, None, "cleared on quit, not left for a minute");
     }
 }

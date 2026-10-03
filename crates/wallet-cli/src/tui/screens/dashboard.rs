@@ -145,18 +145,25 @@ impl Dashboard {
                     )
                 },
             ),
-            row(
-                "outbox",
-                if view.outbox > 0 {
-                    Span::styled(
-                        format!("{} saved payment(s) waiting", view.outbox),
-                        Style::new().fg(theme.warning),
-                    )
-                } else {
-                    Span::styled("empty", theme.muted())
-                },
-            ),
         ];
+        let mut lines = lines;
+        if let Some(reason) = view.offline_reason.filter(|_| !view.online) {
+            lines.push(row(
+                "why",
+                Span::styled(reason.to_string(), Style::new().fg(theme.warning)),
+            ));
+        }
+        lines.extend([row(
+            "outbox",
+            if view.outbox > 0 {
+                Span::styled(
+                    format!("{} saved payment(s) waiting", view.outbox),
+                    Style::new().fg(theme.warning),
+                )
+            } else {
+                Span::styled("empty", theme.muted())
+            },
+        )]);
         f.render_widget(widgets::paragraph(lines), inner);
     }
 
@@ -169,11 +176,17 @@ impl Dashboard {
             return widgets::skeleton_block(f, inner, view.loading_since, view.now, theme);
         };
         if s.txs.is_empty() {
-            let hint = Line::from(Span::styled(
+            let mut hints = vec![Line::from(Span::styled(
                 "No transactions yet. Open Receive (2) to get an address.",
                 theme.muted(),
-            ));
-            return f.render_widget(Paragraph::new(hint), inner);
+            ))];
+            if view.can_switch {
+                hints.push(Line::from(Span::styled(
+                    "Another wallet to pay? Press w, then n to name a new one.",
+                    theme.muted(),
+                )));
+            }
+            return f.render_widget(Paragraph::new(hints), inner);
         }
         let lines: Vec<Line> = s
             .txs

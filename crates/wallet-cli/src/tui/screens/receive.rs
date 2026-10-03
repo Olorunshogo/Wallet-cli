@@ -20,12 +20,21 @@ impl Screen for Receive {
     }
 
     fn hints(&self) -> Vec<(String, String)> {
-        vec![("n".into(), "new address".into())]
+        vec![
+            ("n".into(), "new address".into()),
+            ("c".into(), "copy address".into()),
+        ]
     }
 
     fn on_key(&mut self, key: KeyEvent, cx: &mut Ctx) {
-        if key.code == KeyCode::Char('n') {
-            cx.send(Command::RevealAddress);
+        match key.code {
+            KeyCode::Char('n') => cx.send(Command::RevealAddress),
+            KeyCode::Char('c') => {
+                if let Some(s) = cx.snapshot {
+                    cx.copy(s.receive.address.to_string(), "address");
+                }
+            }
+            _ => {}
         }
     }
 
