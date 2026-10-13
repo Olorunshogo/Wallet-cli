@@ -32,6 +32,7 @@ corepc-node = { workspace = true, optional = true }
 tempfile = { workspace = true, optional = true }
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 base64 = "0.22"
+tui-big-text = "0.8.10"
 
 [features]
 default = ["local-node"]

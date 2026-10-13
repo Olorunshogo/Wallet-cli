@@ -234,7 +234,7 @@ impl Wallets {
 
 #[cfg(test)]
 mod tests {
-    use wallet::{KeySource, MnemonicLength, generate_mnemonic};
+    use wallet::{AddressKind, KeySource, MnemonicLength, generate_mnemonic};
 
     use super::*;
     use crate::session::NewWallet;
@@ -252,6 +252,7 @@ mod tests {
             Network::Regtest,
             NewWallet {
                 keys: KeySource::mnemonic(phrase.as_str()),
+                address_kind: AddressKind::default(),
                 birthday: None,
                 password: None,
             },
@@ -320,6 +321,7 @@ mod tests {
             Network::Regtest,
             NewWallet {
                 keys: KeySource::mnemonic(phrase.as_str()),
+                address_kind: AddressKind::default(),
                 birthday: Some(5),
                 password: None,
             },

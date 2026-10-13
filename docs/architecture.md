@@ -44,7 +44,7 @@ The chain traits are object-safe and have blanket impls for `&T` and `Box<T>`, s
 
 ## Key custody
 
-BDK only ever receives **public** descriptors. `BdkEngine` resolves the `KeySource` (mnemonic or descriptors) into public descriptors plus a private key map, and keeps the key map to itself. Signing uses `bitcoin::Psbt::sign` with that key map, then BDK's finalizer. This follows BDK 3's direction of moving key storage out of `Wallet`, and means a hardware or remote signer is a change inside the engine only.
+BDK only ever receives **public** descriptors. `BdkEngine` resolves the `KeySource` (mnemonic or descriptors) into public descriptors plus a private key map, and keeps the key map to itself. For a mnemonic, `AddressKind` (legacy, nested SegWit, SegWit or Taproot; SegWit/BIP84 by default) picks which BDK template (`Bip44`/`Bip49`/`Bip84`/`Bip86`) derives those descriptors; explicit descriptors are already specific about this and ignore it. Signing uses `bitcoin::Psbt::sign` with that key map, then BDK's finalizer, generically across every script type. This follows BDK 3's direction of moving key storage out of `Wallet`, and means a hardware or remote signer is a change inside the engine only.
 
 - Secrets are held in `Zeroizing` buffers.
 - `KeySource`'s `Debug` output is redacted (covered by a test).
@@ -105,9 +105,9 @@ Every operation returns its own `thiserror` enum marked `#[non_exhaustive]`, so 
 | TUI | validators, widgets, animation, keymap, worker, app state machine, rendering | No (`MockChain`) |
 | TUI end to end | key presses through the real app and worker to a real `bitcoind` | Downloaded automatically |
 
-The public API suite includes the BIP84 test vectors, reorg handling, every coin selection strategy, watch-only signing, persistence across reopen, fee bumping and each lifecycle error. The regtest suite covers receive, spend, confirm, coinbase maturity, typed node rejections, fee estimation on a fresh chain, a fee bump accepted by Bitcoin Core, and a real `invalidateblock` reorg.
+The public API suite includes the official BIP44/49/84/86 test vectors (one per address kind), reorg handling, every coin selection strategy, watch-only signing, persistence across reopen, fee bumping and each lifecycle error. The regtest suite covers receive, spend, confirm, coinbase maturity, typed node rejections, fee estimation on a fresh chain, a fee bump accepted by Bitcoin Core, and a real `invalidateblock` reorg.
 
-Only one test uses a fixed mnemonic: the official BIP84 vector, which proves derivation matches the spec. Everything else generates fresh keys.
+Only the test-vector tests use a fixed mnemonic: the same official vector each BIP's own spec publishes, which proves derivation matches it exactly. Everything else generates fresh keys.
 
 ## Known behaviour
 

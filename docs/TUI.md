@@ -99,8 +99,10 @@ Switching needs named wallets: it is not available with `--datadir` or `--demo`.
 
 ## First start and unlocking
 
+Every run opens on a brief animated banner, built entirely from block characters (via `tui-big-text`, so it looks identical in every terminal): a ₿ badge (a big "B" with a tick mark through the top and bottom) slides down from the top, then "WALLET" (plain) slides in from the left and "LIBRARY" (accent) from the right, a tagline types itself in below, then "Press any key to continue" blinks. Any key skips it and moves on to whichever of the below applies.
+
 - **No wallet named, none yet:** the wallet picker asks for a name first; `esc` quits. With wallets already there it lists them: `enter` opens one, `n` names a new one.
-- **No wallet yet:** a setup screen offers *create* (shows fresh recovery words; `←→` picks 12, 15, 18, 21 or 24 words, regenerating them; `g` for new ones at the same length; `c` to copy them, after confirming) or *restore* (validated words, optional passphrase and birthday height), then an optional password. A password is required on mainnet. The word count defaults to `WALLET_WORDS` (12 if unset).
+- **No wallet yet:** a setup screen offers *create* (shows fresh recovery words; `←→` picks 12, 15, 18, 21 or 24 words, regenerating them; `↑↓` picks the address type - legacy, nested SegWit, SegWit or Taproot; `g` for new words at the same length; `c` to copy them, after confirming) or *restore* (validated words, optional passphrase and birthday height; always restores as SegWit/BIP84 - use the CLI's `--address-type` for another kind), then an optional password. A password is required on mainnet. The word count defaults to `WALLET_WORDS` (12 if unset), the address type to `WALLET_ADDRESS_TYPE` (`segwit` if unset).
 - **Encrypted wallet:** asks for the password; `esc` opens it watch-only instead (view everything, sign nothing).
 - **`--demo`:** skips setup and shows the new recovery words in a welcome dialog; `c` copies them the same way.
 
@@ -138,7 +140,7 @@ A node started with `wallet-cli node start` or `./scripts/regtest.sh start` is p
 Settings live in `<wallet directory>/tui.toml` (or `--tui-config FILE`). Every key is optional; typos are rejected with a clear error.
 
 ```toml
-refresh_secs = 5          # auto-sync interval, 0 = off
+refresh_secs = 5          # auto-sync interval, 0 = off (also WALLET_REFRESH_SECS, default 30)
 reconnect_secs = 5        # retry interval while offline
 fallback_fee_rate = 2     # sat/vB when there is no estimate
 max_fee_rate = 1000       # typo guard for the fee field

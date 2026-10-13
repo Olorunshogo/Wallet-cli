@@ -5,13 +5,14 @@ use wallet::bitcoin::hashes::Hash;
 use wallet::bitcoin::{Address, Amount, FeeRate, Network};
 use wallet::testkit::MockChain;
 use wallet::{
-    BuildTxError, BumpFeeError, CoinSelection, CreateError, Error, KeySource, Keychain, LoadError,
-    MnemonicLength, Recipient, SignError, SignOutcome, SyncError, TxStatus, Wallet,
+    AddressKind, BuildTxError, BumpFeeError, CoinSelection, CreateError, Error, KeySource,
+    Keychain, LoadError, MnemonicLength, Recipient, SignError, SignOutcome, SyncError, TxStatus,
+    Wallet,
 };
 
-/// The official BIP84 test vector. The only fixed mnemonic in the suite: it
-/// proves derivation matches the spec's published addresses. Every other test
-/// generates fresh keys.
+/// The mnemonic every BIP44/49/84/86 test vector in this suite uses. The only
+/// fixed mnemonic in the suite: it proves derivation matches each BIP's
+/// published addresses. Every other test generates fresh keys.
 const BIP84_VECTOR_MNEMONIC: &str =
     "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about";
 
@@ -68,6 +69,51 @@ fn derives_bip84_test_vectors() {
         "bc1qnjg0jd8228aq7egyzacy8cys3knf9xvrerkf9g"
     );
     assert_eq!(second.index, 1);
+}
+
+#[test]
+fn derives_bip44_test_vector() {
+    let mut wallet = Wallet::builder(Network::Bitcoin)
+        .keys(KeySource::mnemonic(BIP84_VECTOR_MNEMONIC))
+        .address_kind(AddressKind::Legacy)
+        .create()
+        .unwrap();
+
+    let first = wallet.new_address().unwrap();
+    assert_eq!(
+        first.address.to_string(),
+        "1LqBGSKuX5yYUonjxT5qGfpUsXKYYWeabA"
+    );
+}
+
+#[test]
+fn derives_bip49_test_vector() {
+    let mut wallet = Wallet::builder(Network::Bitcoin)
+        .keys(KeySource::mnemonic(BIP84_VECTOR_MNEMONIC))
+        .address_kind(AddressKind::NestedSegwit)
+        .create()
+        .unwrap();
+
+    let first = wallet.new_address().unwrap();
+    assert_eq!(
+        first.address.to_string(),
+        "37VucYSaXLCAsxYyAPfbSi9eh4iEcbShgf"
+    );
+}
+
+#[test]
+fn derives_bip86_test_vector() {
+    let mut wallet = Wallet::builder(Network::Bitcoin)
+        .keys(KeySource::mnemonic(BIP84_VECTOR_MNEMONIC))
+        .address_kind(AddressKind::Taproot)
+        .create()
+        .unwrap();
+
+    let first = wallet.new_address().unwrap();
+    assert_eq!(
+        first.address.to_string(),
+        "bc1p5cyxnuxmeuwuvkwfem96lqzszd02n6xdcjrs20cac6yqjjwudpxqkedrcr"
+    );
 }
 
 #[test]
@@ -224,6 +270,27 @@ fn send_convenience_builds_signs_and_broadcasts() {
     chain.fund(addr.script_pubkey(), Amount::from_sat(80_000));
     wallet.sync(&chain).unwrap();
 
+    let txid = wallet.send([outside(10_000)], rate(1), &chain).unwrap();
+    wallet.sync(&chain).unwrap();
+    assert_eq!(wallet.tx_status(txid), Some(TxStatus::Unconfirmed));
+}
+
+#[test]
+fn a_taproot_wallet_builds_signs_and_sends() {
+    let mut wallet = Wallet::builder(Network::Regtest)
+        .keys(KeySource::mnemonic(fresh_phrase()))
+        .address_kind(AddressKind::Taproot)
+        .create()
+        .unwrap();
+    let mut chain = MockChain::new(Network::Regtest);
+
+    let addr = wallet.new_address().unwrap().address;
+    assert!(addr.to_string().starts_with("bcrt1p"), "{addr}");
+    chain.fund(addr.script_pubkey(), Amount::from_sat(80_000));
+    wallet.sync(&chain).unwrap();
+
+    // Sending to an ordinary (non-Taproot) address works just like any
+    // other wallet's own address kind never constrains who it can pay.
     let txid = wallet.send([outside(10_000)], rate(1), &chain).unwrap();
     wallet.sync(&chain).unwrap();
     assert_eq!(wallet.tx_status(txid), Some(TxStatus::Unconfirmed));

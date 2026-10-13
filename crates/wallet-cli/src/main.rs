@@ -27,8 +27,9 @@ use wallet::bitcoin::address::NetworkUnchecked;
 use wallet::bitcoin::{Address, Amount, FeeRate, Network, Txid};
 use wallet::rpc::RpcClient;
 use wallet::{
-    BlockSource, Broadcaster, CoinSelection, FeeEstimateError, FeeEstimator, KeySource,
-    MnemonicLength, Recipient, SignOutcome, SyncReport, TxRequest, Wallet, generate_mnemonic,
+    AddressKind, BlockSource, Broadcaster, CoinSelection, FeeEstimateError, FeeEstimator,
+    KeySource, MnemonicLength, Recipient, SignOutcome, SyncReport, TxRequest, Wallet,
+    generate_mnemonic,
 };
 
 use crate::activity::Activity;
@@ -47,7 +48,7 @@ const FALLBACK_FEE_RATE: u64 = 1;
 #[command(
     name = "wallet-cli",
     version,
-    about = "Non-custodial BIP84 wallet on top of the wallet library"
+    about = "Non-custodial wallet (BIP84 by default, --address-type for others) on top of the wallet library"
 )]
 struct Cli {
     /// Network to operate on.
@@ -104,6 +105,14 @@ enum Command {
         /// Number of words: 12, 15, 18, 21 or 24.
         #[arg(long, env = "WALLET_WORDS", default_value_t = 12, value_parser = parse_word_count)]
         words: usize,
+        /// Script type for this wallet's own addresses. Fixed at creation.
+        #[arg(
+            long,
+            value_enum,
+            default_value = "segwit",
+            env = "WALLET_ADDRESS_TYPE"
+        )]
+        address_type: AddressType,
     },
     /// Restore a wallet from an existing mnemonic.
     Restore {
@@ -116,6 +125,14 @@ enum Command {
         /// Block height to start scanning from on the first sync.
         #[arg(long)]
         birthday: Option<u32>,
+        /// Script type for this wallet's own addresses. Fixed at creation.
+        #[arg(
+            long,
+            value_enum,
+            default_value = "segwit",
+            env = "WALLET_ADDRESS_TYPE"
+        )]
+        address_type: AddressType,
     },
     /// Show a receive address.
     Address {
@@ -217,6 +234,14 @@ enum WalletsAction {
         /// Number of words: 12, 15, 18, 21 or 24.
         #[arg(long, env = "WALLET_WORDS", default_value_t = 12, value_parser = parse_word_count)]
         words: usize,
+        /// Script type for this wallet's own addresses. Fixed at creation.
+        #[arg(
+            long,
+            value_enum,
+            default_value = "segwit",
+            env = "WALLET_ADDRESS_TYPE"
+        )]
+        address_type: AddressType,
     },
     /// Make a wallet the default.
     Use { name: String },
@@ -287,6 +312,25 @@ impl From<Selection> for CoinSelection {
             Selection::Bnb => CoinSelection::BranchAndBound,
             Selection::Largest => CoinSelection::LargestFirst,
             Selection::Oldest => CoinSelection::OldestFirst,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+pub(crate) enum AddressType {
+    Legacy,
+    NestedSegwit,
+    Segwit,
+    Taproot,
+}
+
+impl From<AddressType> for AddressKind {
+    fn from(t: AddressType) -> Self {
+        match t {
+            AddressType::Legacy => AddressKind::Legacy,
+            AddressType::NestedSegwit => AddressKind::NestedSegwit,
+            AddressType::Segwit => AddressKind::Segwit,
+            AddressType::Taproot => AddressKind::Taproot,
         }
     }
 }
@@ -396,7 +440,11 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
             }
             match action.unwrap_or(WalletsAction::List) {
                 WalletsAction::List => out.wallets(&wallets.list(), wallets.root()),
-                WalletsAction::Create { name, words } => {
+                WalletsAction::Create {
+                    name,
+                    words,
+                    address_type,
+                } => {
                     wallets::validate_name(&name)
                         .map_err(|e| anyhow::anyhow!("invalid wallet name {name:?}: {e}"))?;
                     let length = MnemonicLength::from_words(words).expect("validated by clap");
@@ -406,6 +454,7 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
                         &dir,
                         cli.network,
                         KeySource::mnemonic(phrase.as_str()),
+                        address_type.into(),
                         None,
                         cli.encrypt,
                     )?;
@@ -503,13 +552,17 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
         Command::Tui(args) => {
             return tui::run(args, cli.network, node_mode, target, cli.rpc.clone(), local);
         }
-        Command::Init { words } => {
+        Command::Init {
+            words,
+            address_type,
+        } => {
             let length = MnemonicLength::from_words(words).expect("validated by clap");
             let phrase = generate_mnemonic(length).map_err(|e| anyhow::anyhow!(e))?;
             create(
                 &dir,
                 cli.network,
                 KeySource::mnemonic(phrase.as_str()),
+                address_type.into(),
                 None,
                 cli.encrypt,
             )?;
@@ -519,12 +572,20 @@ fn run(cli: Cli, out: &Output) -> Result<()> {
             mnemonic,
             passphrase,
             birthday,
+            address_type,
         } => {
             let keys = match &passphrase {
                 Some(p) => KeySource::mnemonic_with_passphrase(mnemonic.as_str(), p.as_str()),
                 None => KeySource::mnemonic(mnemonic.as_str()),
             };
-            create(&dir, cli.network, keys, birthday, cli.encrypt)?;
+            create(
+                &dir,
+                cli.network,
+                keys,
+                address_type.into(),
+                birthday,
+                cli.encrypt,
+            )?;
             out.created(&dir, cli.network, None, cli.encrypt);
         }
         Command::Address { new } => {
@@ -685,6 +746,7 @@ fn create(
     dir: &DataDir,
     network: Network,
     keys: KeySource,
+    address_kind: AddressKind,
     birthday: Option<u32>,
     encrypt: bool,
 ) -> Result<()> {
@@ -698,6 +760,7 @@ fn create(
         network,
         session::NewWallet {
             keys,
+            address_kind,
             birthday,
             password,
         },

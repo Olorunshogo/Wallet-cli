@@ -881,7 +881,9 @@ pub(crate) mod tests {
 
     use wallet::bitcoin::Block;
     use wallet::testkit::MockChain;
-    use wallet::{BlockId, BlockSource, BoxError, BroadcastError, Broadcaster, FeeEstimator};
+    use wallet::{
+        AddressKind, BlockId, BlockSource, BoxError, BroadcastError, Broadcaster, FeeEstimator,
+    };
     use wallet::{FeeEstimateError, SourceError, TxStatus};
     use zeroize::Zeroizing;
 
@@ -998,6 +1000,7 @@ pub(crate) mod tests {
             let phrase = generate_mnemonic(MnemonicLength::Words12).unwrap();
             h.run(Command::Open(OpenRequest::Create(NewWallet {
                 keys: KeySource::mnemonic(phrase.as_str()),
+                address_kind: AddressKind::default(),
                 birthday: None,
                 password: None,
             })));
@@ -1214,6 +1217,7 @@ pub(crate) mod tests {
         let phrase = generate_mnemonic(MnemonicLength::Words12).unwrap();
         h.run(Command::Open(OpenRequest::Create(NewWallet {
             keys: KeySource::mnemonic(phrase.as_str()),
+            address_kind: AddressKind::default(),
             birthday: None,
             password: Some(Zeroizing::new("correct horse".into())),
         })));
@@ -1410,6 +1414,7 @@ pub(crate) mod tests {
         let phrase = generate_mnemonic(MnemonicLength::Words12).unwrap();
         worker.handle(Command::Open(OpenRequest::Create(NewWallet {
             keys: KeySource::mnemonic(phrase.as_str()),
+            address_kind: AddressKind::default(),
             birthday: None,
             password: None,
         })));
@@ -1445,6 +1450,7 @@ pub(crate) mod tests {
         let phrase = generate_mnemonic(MnemonicLength::Words12).unwrap();
         h.run(Command::Open(OpenRequest::Create(NewWallet {
             keys: KeySource::mnemonic(phrase.as_str()),
+            address_kind: AddressKind::default(),
             birthday: None,
             password: None,
         })));

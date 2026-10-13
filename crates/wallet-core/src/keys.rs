@@ -8,8 +8,9 @@ use zeroize::Zeroizing;
 /// the `Debug` impl never prints them.
 #[derive(Clone)]
 pub enum KeySource {
-    /// A BIP39 mnemonic. Engines derive BIP84 (native SegWit) descriptors
-    /// from it: `m/84'/coin'/0'/0/*` for receive and `.../1/*` for change.
+    /// A BIP39 mnemonic. Engines derive descriptors from it according to
+    /// [`AddressKind`] (default BIP84, native SegWit): e.g. for BIP84,
+    /// `m/84'/coin'/0'/0/*` for receive and `.../1/*` for change.
     Mnemonic {
         /// The space-separated English words.
         phrase: Zeroizing<String>,
@@ -53,6 +54,53 @@ impl KeySource {
             external: Zeroizing::new(external.into()),
             internal: Zeroizing::new(internal.into()),
         }
+    }
+}
+
+/// Script type for a wallet's own addresses, derived from a mnemonic.
+///
+/// Only affects [`KeySource::Mnemonic`]: [`KeySource::Descriptors`] is
+/// already explicit about its script type. Sending is unaffected either
+/// way; a wallet can pay any address type regardless of its own kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum AddressKind {
+    /// BIP44: `pkh(...)`, legacy P2PKH addresses (`1...`).
+    Legacy,
+    /// BIP49: `sh(wpkh(...))`, nested SegWit addresses (`3...`).
+    NestedSegwit,
+    /// BIP84: `wpkh(...)`, native SegWit addresses (`bc1q...`).
+    #[default]
+    Segwit,
+    /// BIP86: `tr(...)`, Taproot addresses (`bc1p...`).
+    Taproot,
+}
+
+impl AddressKind {
+    /// Every kind, in the order a UI should offer them.
+    pub const ALL: [AddressKind; 4] = [
+        AddressKind::Legacy,
+        AddressKind::NestedSegwit,
+        AddressKind::Segwit,
+        AddressKind::Taproot,
+    ];
+
+    /// Short, lowercase, hyphenated name: `legacy`, `nested-segwit`,
+    /// `segwit`, `taproot`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AddressKind::Legacy => "legacy",
+            AddressKind::NestedSegwit => "nested-segwit",
+            AddressKind::Segwit => "segwit",
+            AddressKind::Taproot => "taproot",
+        }
+    }
+}
+
+impl fmt::Display for AddressKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -134,5 +182,19 @@ mod tests {
         let printed = format!("{keys:?}");
         assert!(!printed.contains("secret"));
         assert!(!printed.contains("hunter2"));
+    }
+
+    #[test]
+    fn address_kind_defaults_to_segwit() {
+        assert_eq!(AddressKind::default(), AddressKind::Segwit);
+    }
+
+    #[test]
+    fn address_kind_names_are_distinct() {
+        let names: Vec<&str> = AddressKind::ALL.iter().map(|k| k.as_str()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(names.len(), sorted.len());
     }
 }

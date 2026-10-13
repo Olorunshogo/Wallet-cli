@@ -683,8 +683,12 @@ impl App {
             SwitchKind::Opening => Phase::Opening,
             SwitchKind::Locked => Phase::Unlock(Unlock::default()),
             SwitchKind::New => Phase::Onboarding(Box::new(
-                Onboarding::new(self.config.mnemonic_length(), self.network)
-                    .named(Some(name.clone())),
+                Onboarding::new(
+                    self.config.mnemonic_length(),
+                    self.config.address_kind,
+                    self.network,
+                )
+                .named(Some(name.clone())),
             )),
         };
         let what = match kind {
@@ -794,6 +798,7 @@ impl App {
                 self.phase = Phase::Opening;
                 vec![Command::Open(OpenRequest::Create(NewWallet {
                     keys,
+                    address_kind: wallet::AddressKind::default(),
                     birthday: None,
                     password: None,
                 }))]
@@ -809,8 +814,12 @@ impl App {
             }
             Some(StartupWallet::Missing) => {
                 self.phase = Phase::Onboarding(Box::new(
-                    Onboarding::new(self.config.mnemonic_length(), self.network)
-                        .named(self.wallet_name.clone()),
+                    Onboarding::new(
+                        self.config.mnemonic_length(),
+                        self.config.address_kind,
+                        self.network,
+                    )
+                    .named(self.wallet_name.clone()),
                 ));
                 Vec::new()
             }
@@ -1189,11 +1198,11 @@ mod tests {
     fn auto_sync_runs_on_the_configured_interval() {
         let t0 = Instant::now();
         let mut app = ready_app(t0);
-        assert!(app.on_tick(t0 + ms(5_000)).is_empty());
-        let due = app.on_tick(t0 + ms(10_000));
+        assert!(app.on_tick(t0 + ms(15_000)).is_empty());
+        let due = app.on_tick(t0 + ms(30_000));
         assert!(matches!(due.as_slice(), [Command::Sync { manual: false }]));
         assert!(
-            app.on_tick(t0 + ms(10_100)).is_empty(),
+            app.on_tick(t0 + ms(30_100)).is_empty(),
             "no duplicate while running"
         );
 

@@ -5,6 +5,8 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent};
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
+use wallet::bitcoin::Address;
+use wallet::bitcoin::address::AddressType;
 
 use super::{Ctx, Screen, View};
 use crate::tui::message::{Command, WorkerEvent};
@@ -13,6 +15,18 @@ use crate::tui::widgets::{self, panel, qr_lines};
 
 /// The receive tab.
 pub struct Receive;
+
+/// Short label for the address's own script type, read from the address
+/// itself so it is always right, including for watch-only descriptors.
+fn script_kind(address: &Address) -> &'static str {
+    match address.address_type() {
+        Some(AddressType::P2pkh) => "Legacy",
+        Some(AddressType::P2sh) => "Nested SegWit",
+        Some(AddressType::P2wpkh) | Some(AddressType::P2wsh) => "SegWit",
+        Some(AddressType::P2tr) => "Taproot",
+        _ => "unknown type",
+    }
+}
 
 impl Screen for Receive {
     fn title(&self) -> &'static str {
@@ -64,7 +78,12 @@ impl Screen for Receive {
 
         let header = vec![
             Line::from(Span::styled(
-                format!("Address #{} (BIP84, {})", s.receive.index, s.network),
+                format!(
+                    "Address #{} ({}, {})",
+                    s.receive.index,
+                    script_kind(&s.receive.address),
+                    s.network
+                ),
                 theme.muted(),
             )),
             Line::raw(""),

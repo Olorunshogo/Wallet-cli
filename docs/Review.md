@@ -6,9 +6,9 @@
 2. [Crate-by-Crate Analysis](#2-crate-by-crate-analysis)
 3. [Lecture: Bitcoin Wallet Creation](#3-lecture-bitcoin-wallet-creation)
 4. [Lecture: PSBT (Partially Signed Bitcoin Transaction)](#4-lecture-psbt-partially-signed-bitcoin-transaction)
-5. [What We Did Right](#5-what-we-did-right)
-6. [What We Can Do Better](#6-what-we-can-do-better)
-7. [Polar / Lightning: Do We Need It?](#7-polar--lightning-do-we-need-it)
+5. [Strengths](#5-strengths)
+6. [Open Issues](#6-open-issues)
+7. [Polar / Lightning: Relevance](#7-polar--lightning-relevance)
 8. [Architecture Diagrams](#8-architecture-diagrams)
 9. [Data Flow Deep-Dives](#9-data-flow-deep-dives)
 10. [Dependency Graph & Version Matrix](#10-dependency-graph--version-matrix)
@@ -41,10 +41,6 @@ The workspace is a Cargo workspace (edition 2024, resolver 3) with five crates:
 - **Keymap held outside BDK.** BDK only receives public descriptors. Private keys stay in the engine for signing.
 - **One error enum per operation.** Each public method returns the narrowest `thiserror` enum describing what can actually go wrong.
 - **Generic facade.** `Wallet<E: WalletEngine = BdkEngine>`: the default makes it easy to use, the generic makes it easy to swap.
-
-### 1.4 Git state
-
-The repo has no commits yet (fresh `main` branch). The codebase is fully built and tested but uncommitted.
 
 ---
 
@@ -165,11 +161,9 @@ Implements all three chain traits in memory:
 
 Blocks are structurally valid (linked headers, correct merkle roots, BIP34 coinbases) but have no proof of work: wallet engines don't check PoW.
 
-**Do we need this crate?**
+**Crate necessity.**
 
-**Yes: this is the most important crate.** It's the "pure Rust" heart the project description calls for. It has zero IO, zero BDK, and the compiler enforces that (no dependencies to import). The v2 native engine plan depends entirely on this crate staying stable. Without it, every adapter would redefine the same types.
-
-**Necessity: 10/10 (irreplaceable).**
+This is the most important crate: the "pure Rust" heart the project description calls for. It has zero IO, zero BDK, and the compiler enforces that (no dependencies to import). The v2 native engine plan depends entirely on this crate staying stable. Without it, every adapter would redefine the same types, making it effectively irreplaceable.
 
 ---
 
@@ -250,11 +244,9 @@ Block-based sync with reorg handling:
 5. Persist every 500 blocks (resumable long sync) and at the end
 6. Return a `SyncReport`
 
-**Do we need this crate?**
+**Crate necessity.**
 
-**Yes for v1.** It's the only working engine. The modularity is real: `Wallet<E: WalletEngine>` is generic, and `Wallet::from_engine()` accepts any implementor. The swap is a `Cargo.toml` change + one line at the call site.
-
-**Necessity: 9/10 (needed now, replaceable by v2).**
+Needed for v1: it's the only working engine. The modularity is real: `Wallet<E: WalletEngine>` is generic, and `Wallet::from_engine()` accepts any implementor. The swap is a `Cargo.toml` change plus one line at the call site, so this crate is replaceable by v2 without being load-bearing the way `wallet-core` is.
 
 ---
 
@@ -298,11 +290,9 @@ pub enum RpcAuth {
 
 `estimatesmartfee`: converts BTC/kvB to sat/kwu (1 vB = 4 wu, so `per_kvb.to_sat() / 4`).
 
-**Do we need this crate?**
+**Crate necessity.**
 
-**Yes for v1.** It's the only real chain backend. The `BlockSource` trait is block-based on purpose: the engine receives full blocks and filters, so no `txindex` or address index is needed on the node. This is what makes the same backend work for BDK today and a native engine tomorrow.
-
-**Necessity: 8/10 (needed for real chains, but Esplora could be a second impl).**
+Needed for v1: it's the only real chain backend. The `BlockSource` trait is block-based on purpose: the engine receives full blocks and filters, so no `txindex` or address index is needed on the node. This is what makes the same backend work for BDK today and a native engine tomorrow. It isn't the only possible backend, though: an Esplora implementation could sit alongside it.
 
 ---
 
@@ -363,11 +353,9 @@ This is the cleanest demonstration of the whole flow in 6 lines: build → sign 
 | `rpc` | yes | Includes `wallet-rpc` as a dependency, exposes `wallet::rpc` module |
 | `serde` | no | Enables `Serialize`/`Deserialize` on all public types |
 
-**Do we need this crate?**
+**Crate necessity.**
 
-**Yes.** This is the "small, focused BDK" the project description asks for. It's the crate that gets published and depended on.
-
-**Necessity: 10/10 (this is the product).**
+This is the "small, focused BDK" the project description asks for, and the crate that gets published and depended on: the product itself.
 
 ---
 
@@ -414,27 +402,25 @@ Every command prints through `Output` which has two modes:
 
 The `emit()` method takes a `serde_json::Value` and a closure producing the text version, so the two formats stay in sync.
 
-**Do we need this crate?**
+**Crate necessity.**
 
-**Yes for demonstration, no for the library.** It's the proof that the library works end-to-end. It's also the only crate that uses `anyhow` (appropriate for a binary). The CLI stores the mnemonic unencrypted (mode 0600): fine for regtest, documented as such.
-
-**Necessity: 7/10 (essential for demo/testing, not part of the library proper).**
+Needed for demonstration, not for the library itself. It's the proof that the library works end-to-end, and the only crate that uses `anyhow` (appropriate for a binary). The CLI stores the mnemonic unencrypted (mode 0600): fine for regtest, documented as such. Essential for the demo and tests, but not part of the library proper.
 
 ---
 
-### 2.6 Summary: Do we need each crate?
+### 2.6 Summary: crate necessity
 
-| Crate | Need? | Why | Necessity |
-|---|---|---|---|
-| `wallet-core` | **Absolutely** | The shared vocabulary; v2 depends on it | 10/10 |
-| `wallet-bdk` | **Yes (v1)** | The only engine today; swap point for v2 | 9/10 |
-| `wallet-rpc` | **Yes** | The only real chain backend | 8/10 |
-| `wallet` | **Absolutely** | The public API consumers depend on | 10/10 |
-| `wallet-cli` | **Yes (demo)** | Proof of end-to-end functionality | 7/10 |
+| Crate | Need? | Why |
+|---|---|---|
+| `wallet-core` | Load-bearing | The shared vocabulary; v2 depends on it |
+| `wallet-bdk` | Needed for v1 | The only engine today; swap point for v2 |
+| `wallet-rpc` | Needed | The only real chain backend |
+| `wallet` | Load-bearing | The public API consumers depend on |
+| `wallet-cli` | Needed for the demo | Proof of end-to-end functionality |
 
-**Could we collapse any?**
+**Could any of these collapse?**
 
-You could merge `wallet-bdk` into `wallet` and `wallet-rpc` into `wallet`, but you'd lose the modularity that's the whole point of the project. The 5-crate split is correct: it mirrors the seam structure (engine / backend / facade / binary) and lets each piece be tested and replaced independently.
+`wallet-bdk` and `wallet-rpc` could be merged into `wallet`, but that would lose the modularity that's the whole point of the project. The 5-crate split mirrors the seam structure (engine / backend / facade / binary) and lets each piece be tested and replaced independently.
 
 ---
 
@@ -514,7 +500,7 @@ A BIP39 mnemonic encodes entropy as words from a 2048-word list:
 
 The checksum is the first `entropy_bits/32` bits of SHA256(entropy).
 
-**In your code** (`wallet-bdk/src/keys.rs`):
+**In `wallet-bdk/src/keys.rs`:**
 
 ```rust
 pub fn generate_mnemonic(length: MnemonicLength) -> Result<Zeroizing<String>, BoxError> {
@@ -576,7 +562,7 @@ Where:
 - `xpub` = extended public key at the account level
 - `/0/*` = external keychain, any index
 
-### 3.5 What your code does step by step
+### 3.5 Step by step
 
 In `wallet-bdk/src/keys.rs`, the `resolve()` function:
 
@@ -617,7 +603,7 @@ pub(crate) fn resolve(keys: &KeySource, network: Network) -> Result<Resolved, Bo
 | **Passphrase** | BIP39 "256th word": optional extra secret. Same mnemonic + different passphrase = completely different wallet. |
 | **Derivation path** | The "address" of a key in the tree. `m/84'/0'/0'/0/0` = first receive address on mainnet. |
 | **Hardened derivation** (`'`) | Child can't be derived from parent public key. Used at purpose, coin, and account levels. |
-| **Gap limit** | How many unused addresses to watch. BDK defaults to 20. Your `lookahead` configures this. |
+| **Gap limit** | How many unused addresses to watch. BDK defaults to 20. The builder's `lookahead` configures this. |
 | **Descriptor** | A script expression plus the keys needed to satisfy it. `wpkh(...)` = pay-to-witness-pubkey-hash. |
 | **xpub/xprv** | Extended public/private key: includes the chain code so children can be derived. |
 | **P2WPKH** | Pay-to-witness-pubkey-hash, the SegWit output type. Script: `OP_0 <20-byte-hash>`. |
@@ -688,7 +674,7 @@ PSBT Output (per output):
 The creator builds an unsigned transaction and wraps it in a PSBT:
 
 ```rust
-// In your code (wallet-bdk/src/engine.rs, build_tx):
+// wallet-bdk/src/engine.rs, build_tx:
 let mut builder = self.wallet.build_tx()
     .set_recipients(outputs)           // add outputs
     .fee_rate(request.fee_rate);       // set fee rate
@@ -705,7 +691,7 @@ At this point:
 The signer adds partial signatures for the inputs it can sign:
 
 ```rust
-// In your code (wallet-bdk/src/engine.rs, sign):
+// wallet-bdk/src/engine.rs, sign:
 let signer = self.signer.as_ref().ok_or(SignError::WatchOnly)?;
 let signed = psbt.sign(signer, self.wallet.secp_ctx())?;
 ```
@@ -719,7 +705,7 @@ At this point:
 The finalizer combines all partial signatures into the final witness:
 
 ```rust
-// In your code (wallet-bdk/src/engine.rs, sign):
+// wallet-bdk/src/engine.rs, sign:
 let finalized = self.wallet.finalize_psbt(psbt, SignOptions::default())?;
 ```
 
@@ -732,13 +718,13 @@ At this point:
 The extractor produces the raw transaction:
 
 ```rust
-// In your code (wallet/src/lib.rs, send):
+// wallet/src/lib.rs, send:
 let tx = psbt.extract_tx().map_err(|e| Error::Extract(Box::new(e)))?;
 ```
 
-### 4.4 Why PSBT matters for your architecture
+### 4.4 Why PSBT matters for this architecture
 
-PSBT is the **interoperability standard**. Because your `sign()` method takes `&mut Psbt` and returns `SignOutcome`, you can:
+PSBT is the **interoperability standard**. Because `WalletEngine::sign()` takes `&mut Psbt` and returns `SignOutcome`, it enables:
 
 | Use case | How PSBT enables it |
 |---|---|
@@ -767,7 +753,7 @@ Where:
 - `base_size` = size without witness data
 - `total_size` = size with witness data
 
-Your code uses `FeeRate::from_sat_per_vb_u32(2)` = 2 sat/vB. The fee is calculated by BDK's `TxBuilder` which:
+The quickstart example uses `FeeRate::from_sat_per_vb_u32(2)` (2 sat/vB). The fee is calculated by BDK's `TxBuilder`, which:
 1. Selects UTXOs (coin selection)
 2. Adds a change output if needed
 3. Calculates the fee based on the estimated transaction weight
@@ -786,11 +772,11 @@ When signing, the signer must commit to which parts of the transaction are being
 | `NONE\|ANYONECANPAY` | 0x82 | One input, no outputs | Rarely used |
 | `SINGLE\|ANYONECANPAY` | 0x83 | One input, one output | Rarely used |
 
-Your code uses `SignOptions::default()` which uses `SighashType::All`: the standard choice.
+`BdkEngine::sign` uses `SignOptions::default()`, which uses `SighashType::All`: the standard choice.
 
 ---
 
-## 5. What We Did Right
+## 5. Strengths
 
 ### 5.1 Architecture
 
@@ -804,7 +790,7 @@ Your code uses `SignOptions::default()` which uses `SighashType::All`: the stand
 
 ### 5.2 Error handling
 
-**One enum per operation, `#[non_exhaustive]`.** Callers can match exhaustively on the cases they care about, and you can add variants without breaking them. This is the right approach for a library.
+**One enum per operation, `#[non_exhaustive]`.** Callers can match exhaustively on the cases they care about, and new variants can be added without breaking them. This is the right approach for a library.
 
 **Structured data in variants.** `InsufficientFunds { needed, available }`, `WrongNetwork { address, expected }`, `NetworkMismatch { expected, found }`: not strings. This lets callers programmatically react to errors.
 
@@ -856,7 +842,7 @@ Your code uses `SignOptions::default()` which uses `SighashType::All`: the stand
 
 ---
 
-## 6. What We Can Do Better
+## 6. Open Issues
 
 ### 6.1 API design
 
@@ -878,7 +864,7 @@ Actually, `impl IntoIterator` already accepts `Vec<Recipient>` by value. The iss
 This is correct (signing doesn't mutate wallet state), but it's inconsistent with `build_tx` which takes `&mut self`. The inconsistency is justified (build_tx may reveal a change address), but it should be documented why.
 
 **3. `sync` takes `&impl BlockSource`.**
-This is good for static dispatch, but means you can't easily store a `Box<dyn BlockSource>` in a struct. Consider adding a `sync_boxed` or making the trait object-safe with a blanket impl for `Box<dyn BlockSource>`.
+This is good for static dispatch, but means a `Box<dyn BlockSource>` can't easily be stored in a struct. Consider adding a `sync_boxed` or making the trait object-safe with a blanket impl for `Box<dyn BlockSource>`.
 
 ### 6.2 Error handling
 
@@ -940,7 +926,7 @@ Consider `export-psbt` and `sign-psbt` commands to demonstrate the PSBT flow.
 
 ---
 
-## 7. Polar / Lightning: Do We Need It?
+## 7. Polar / Lightning: Relevance
 
 ### 7.1 What Polar is
 
@@ -949,9 +935,9 @@ Polar is a tool for running a **local Lightning Network** on regtest. It spins u
 - One or more Lightning nodes (LND, Core Lightning, or Eclair)
 - A web UI for managing channels
 
-### 7.2 Do we need it for this project?
+### 7.2 Relevance to this project
 
-**No: not for the wallet library (Project 7).**
+**Not for the wallet library (Project 7).**
 
 | Aspect | Wallet Library (P7) | Lightning (P5) |
 |---|---|---|
@@ -963,16 +949,16 @@ Polar is a tool for running a **local Lightning Network** on regtest. It spins u
 
 The wallet library is purely L1. It creates, signs, and broadcasts Bitcoin transactions. Lightning is a separate protocol built on top of Bitcoin.
 
-### 7.3 When would you need Polar?
+### 7.3 When Polar becomes relevant
 
-You'd need Polar if you were building:
+Polar becomes relevant when building:
 - A Lightning wallet (Project 5)
 - A Lightning node integration
 - A service that opens/closes channels
 
 ### 7.4 How to connect Polar (for future reference)
 
-If you do need Polar for a Lightning project:
+To connect Polar for a Lightning project:
 
 ```bash
 # 1. Install Polar
@@ -990,11 +976,11 @@ The Polar UI runs at `http://localhost:3000`. Each Lightning node exposes:
 - gRPC (port varies)
 - Macaroon for auth
 
-To connect from Rust, you'd use a Lightning client crate like `tonic` (for gRPC) or `reqwest` (for REST), with the macaroon as an auth header.
+Connecting from Rust would use a Lightning client crate such as `tonic` (for gRPC) or `reqwest` (for REST), with the macaroon as an auth header.
 
-### 7.5 The one place Lightning touches your wallet library
+### 7.5 The one place Lightning touches this wallet library
 
-If you later build a Lightning wallet, the **funding transaction** (opening a channel) is a regular Bitcoin transaction, and that's where your wallet library would be used:
+In a future Lightning wallet, the **funding transaction** (opening a channel) is a regular Bitcoin transaction, and that's where this wallet library would be used:
 
 ```rust
 // Open a channel = build a tx to a 2-of-2 multisig
@@ -1005,7 +991,7 @@ let txid = broadcaster.broadcast(&psbt.extract_tx()?)?;
 // Lightning node watches for the funding tx and completes the channel open
 ```
 
-So the wallet library is a **prerequisite** for a Lightning wallet, but Polar itself is not needed until you build the Lightning layer.
+So the wallet library is a **prerequisite** for a Lightning wallet, but Polar itself is not needed until the Lightning layer is built.
 
 ---
 

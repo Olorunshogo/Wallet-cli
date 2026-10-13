@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use wallet::bitcoin::Network;
-use wallet::{KeySource, MnemonicLength, generate_mnemonic};
+use wallet::{AddressKind, KeySource, MnemonicLength, generate_mnemonic};
 use zeroize::Zeroizing;
 
 use super::format::ErrorView;
@@ -134,6 +134,7 @@ enum Step {
         password: Field<AnyText>,
         confirm: Field<AnyText>,
         keys: KeySource,
+        address_kind: AddressKind,
         birthday: Option<u32>,
     },
     Creating,
@@ -144,6 +145,10 @@ pub struct Onboarding {
     step: Step,
     banner: Option<ErrorView>,
     length: MnemonicLength,
+    /// Script type for a freshly created wallet's own addresses. Only
+    /// settable on the create path (`↑`/`↓` on the words screen); restoring
+    /// always uses the default (BIP84) for now.
+    address_kind: AddressKind,
     /// Mainnet wallets must be encrypted.
     require_password: bool,
     /// Name of the wallet being set up, for named wallets.
@@ -152,11 +157,12 @@ pub struct Onboarding {
 
 impl Onboarding {
     /// Start at the create/restore choice.
-    pub fn new(length: MnemonicLength, network: Network) -> Self {
+    pub fn new(length: MnemonicLength, address_kind: AddressKind, network: Network) -> Self {
         Self {
             step: Step::Choose { selected: 0 },
             banner: None,
             length,
+            address_kind,
             require_password: network == Network::Bitcoin,
             name: None,
         }
@@ -202,6 +208,23 @@ impl Onboarding {
         self.length = all[((at + by).rem_euclid(len)) as usize];
     }
 
+    /// The address kind a freshly created wallet will use.
+    #[cfg(test)]
+    pub fn address_kind(&self) -> AddressKind {
+        self.address_kind
+    }
+
+    /// Move to the previous (`-1`) or next (`+1`) address kind, wrapping.
+    fn step_address_kind(&mut self, by: isize) {
+        let all = AddressKind::ALL;
+        let at = all
+            .iter()
+            .position(|k| *k == self.address_kind)
+            .unwrap_or(0) as isize;
+        let len = all.len() as isize;
+        self.address_kind = all[((at + by).rem_euclid(len)) as usize];
+    }
+
     /// Creating failed; go back to the start with the reason.
     pub fn failed(&mut self, error: &ErrorView) {
         self.banner = Some(error.clone());
@@ -212,12 +235,15 @@ impl Onboarding {
         generate_mnemonic(self.length).ok()
     }
 
-    fn protect(keys: KeySource, birthday: Option<u32>) -> Step {
+    /// The password screen for these keys: optionally encrypt them before
+    /// [`Command::Open`] actually creates the wallet.
+    fn password_step(keys: KeySource, address_kind: AddressKind, birthday: Option<u32>) -> Step {
         Step::Protect {
             focus: 0,
             password: Field::masked("Password (optional)", "leave empty to skip", AnyText),
             confirm: Field::masked("Confirm password", "", AnyText),
             keys,
+            address_kind,
             birthday,
         }
     }
@@ -225,6 +251,7 @@ impl Onboarding {
     /// Handle a key; may produce the create command.
     pub fn on_key(&mut self, key: KeyEvent) -> Option<Command> {
         let require_password = self.require_password;
+        let address_kind = self.address_kind;
         let next = match &mut self.step {
             Step::Choose { selected } => match key.code {
                 KeyCode::Up | KeyCode::Down => {
@@ -260,8 +287,16 @@ impl Onboarding {
                     self.step_length(if key.code == KeyCode::Left { -1 } else { 1 });
                     self.fresh_words().map(|words| Step::ShowWords { words })
                 }
+                KeyCode::Up | KeyCode::Down => {
+                    self.step_address_kind(if key.code == KeyCode::Up { -1 } else { 1 });
+                    None
+                }
                 KeyCode::Esc => Some(Step::Choose { selected: 0 }),
-                KeyCode::Enter => Some(Self::protect(KeySource::mnemonic(words.as_str()), None)),
+                KeyCode::Enter => Some(Self::password_step(
+                    KeySource::mnemonic(words.as_str()),
+                    address_kind,
+                    None,
+                )),
                 _ => None,
             },
             Step::Restore {
@@ -287,7 +322,7 @@ impl Onboarding {
                         } else {
                             KeySource::mnemonic_with_passphrase(words, pass)
                         };
-                        Some(Self::protect(keys, height))
+                        Some(Self::password_step(keys, address_kind, height))
                     }
                     (Err(_), _) => {
                         *focus = 0;
@@ -312,6 +347,7 @@ impl Onboarding {
                 password,
                 confirm,
                 keys,
+                address_kind,
                 birthday,
             } => match key.code {
                 KeyCode::Esc => Some(Step::Choose { selected: 0 }),
@@ -344,6 +380,7 @@ impl Onboarding {
                     }
                     let new = NewWallet {
                         keys: keys.clone(),
+                        address_kind: *address_kind,
                         birthday: *birthday,
                         password: (!pw.is_empty()).then(|| Zeroizing::new(pw)),
                     };
@@ -463,14 +500,27 @@ impl Onboarding {
                     });
                 }
                 counts.push(Span::styled(" ›", theme.muted()));
+                let mut kinds = vec![Span::styled("Type   ‹ ", theme.muted())];
+                for kind in AddressKind::ALL {
+                    let text = format!(" {kind} ");
+                    kinds.push(if kind == self.address_kind {
+                        Span::styled(text, theme.selected())
+                    } else {
+                        Span::styled(text, theme.muted())
+                    });
+                }
+                kinds.push(Span::styled(" ›", theme.muted()));
                 lines.extend([
                     Line::raw(""),
                     Line::from(counts),
+                    Line::raw(""),
+                    Line::from(kinds),
                     Line::raw(""),
                     hint_line(
                         &[
                             ("enter".into(), "I wrote them down".into()),
                             ("←→".into(), "word count".into()),
+                            ("↑↓".into(), "address type".into()),
                             ("c".into(), "copy".into()),
                             ("g".into(), "new words".into()),
                             ("esc".into(), "back".into()),
@@ -573,7 +623,11 @@ mod tests {
 
     #[test]
     fn create_flow_generates_words_then_creates() {
-        let mut o = Onboarding::new(MnemonicLength::Words18, Network::Regtest);
+        let mut o = Onboarding::new(
+            MnemonicLength::Words18,
+            AddressKind::default(),
+            Network::Regtest,
+        );
         o.on_key(key(KeyCode::Enter));
         assert_eq!(o.step_name(), "words");
         let Step::ShowWords { words } = &o.step else {
@@ -603,7 +657,11 @@ mod tests {
 
     #[test]
     fn left_right_cycle_the_word_count_and_regenerate() {
-        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Regtest);
+        let mut o = Onboarding::new(
+            MnemonicLength::Words12,
+            AddressKind::default(),
+            Network::Regtest,
+        );
         o.on_key(key(KeyCode::Enter));
         assert_eq!(o.length(), MnemonicLength::Words12);
 
@@ -624,8 +682,40 @@ mod tests {
     }
 
     #[test]
+    fn up_down_cycle_the_address_kind_and_carry_it_into_the_new_wallet() {
+        let mut o = Onboarding::new(
+            MnemonicLength::Words12,
+            AddressKind::default(),
+            Network::Regtest,
+        );
+        o.on_key(key(KeyCode::Enter));
+        assert_eq!(o.address_kind(), AddressKind::Segwit, "default");
+
+        o.on_key(key(KeyCode::Down));
+        assert_eq!(o.address_kind(), AddressKind::Taproot);
+
+        o.on_key(key(KeyCode::Up));
+        o.on_key(key(KeyCode::Up));
+        assert_eq!(o.address_kind(), AddressKind::NestedSegwit, "wraps around");
+
+        o.on_key(key(KeyCode::Enter));
+        let command = o.on_key(key(KeyCode::Enter));
+        assert!(matches!(
+            command,
+            Some(Command::Open(OpenRequest::Create(NewWallet {
+                address_kind: AddressKind::NestedSegwit,
+                ..
+            })))
+        ));
+    }
+
+    #[test]
     fn shown_words_are_available_only_on_the_words_step() {
-        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Regtest);
+        let mut o = Onboarding::new(
+            MnemonicLength::Words12,
+            AddressKind::default(),
+            Network::Regtest,
+        );
         assert!(o.shown_words().is_none(), "still choosing create/restore");
         o.on_key(key(KeyCode::Enter));
         assert!(o.shown_words().is_some());
@@ -635,7 +725,11 @@ mod tests {
 
     #[test]
     fn passwords_must_be_long_enough_and_match() {
-        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Regtest);
+        let mut o = Onboarding::new(
+            MnemonicLength::Words12,
+            AddressKind::default(),
+            Network::Regtest,
+        );
         o.on_key(key(KeyCode::Enter));
         o.on_key(key(KeyCode::Enter));
         type_text(&mut o, "short");
@@ -669,7 +763,11 @@ mod tests {
 
     #[test]
     fn mainnet_requires_a_password() {
-        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Bitcoin);
+        let mut o = Onboarding::new(
+            MnemonicLength::Words12,
+            AddressKind::default(),
+            Network::Bitcoin,
+        );
         o.on_key(key(KeyCode::Enter));
         o.on_key(key(KeyCode::Enter));
         assert!(o.on_key(key(KeyCode::Enter)).is_none());
@@ -681,7 +779,11 @@ mod tests {
 
     #[test]
     fn restore_validates_words_and_carries_passphrase_and_birthday() {
-        let mut o = Onboarding::new(MnemonicLength::Words12, Network::Regtest);
+        let mut o = Onboarding::new(
+            MnemonicLength::Words12,
+            AddressKind::default(),
+            Network::Regtest,
+        );
         o.on_key(key(KeyCode::Down));
         o.on_key(key(KeyCode::Enter));
         assert_eq!(o.step_name(), "restore");

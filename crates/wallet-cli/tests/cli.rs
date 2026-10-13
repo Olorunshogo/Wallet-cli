@@ -134,6 +134,27 @@ fn address_is_stable_until_a_new_one_is_asked_for() {
 }
 
 #[test]
+fn address_type_selects_the_wallets_own_script_kind() {
+    // Legacy regtest/testnet addresses start with 'm' or 'n' depending on the
+    // pubkey hash, not just one fixed prefix.
+    for (address_type, prefixes) in [
+        ("legacy", &["m", "n"][..]),
+        ("nested-segwit", &["2"][..]),
+        ("segwit", &["bcrt1q"][..]),
+        ("taproot", &["bcrt1p"][..]),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        init(tmp.path(), &["--address-type", address_type]);
+        let address = json(cli(tmp.path()).args(["--json", "address"]));
+        let address = address["address"].as_str().unwrap();
+        assert!(
+            prefixes.iter().any(|p| address.starts_with(p)),
+            "{address_type}: {address}"
+        );
+    }
+}
+
+#[test]
 fn restore_rebuilds_the_same_wallet_and_rejects_bad_words() {
     let original = TempDir::new().unwrap();
     let words = init(original.path(), &[])["mnemonic"]

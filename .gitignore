@@ -6,3 +6,4 @@
 .env
 # The template is meant to be committed (a global `.env.*` rule would hide it).
 !.env.example
+docs/*snippets.md

@@ -33,11 +33,17 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::layout::{Alignment, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Paragraph};
+use tui_big_text::{BigText, PixelSize};
 use wallet::bitcoin::{FeeRate, Network};
 
 use self::app::{App, StartupWallet};
 use self::chain::NodeMode;
 use self::config::TuiConfig;
+use self::theme::Theme;
 use self::worker::{WorkerConfig, WorkerHandle, WorkerSpec};
 use crate::config::{DataDir, RpcArgs};
 use crate::node::LocalNode;
@@ -58,6 +64,10 @@ pub struct TuiArgs {
     /// on the setup screen). Overrides `mnemonic_words` in `tui.toml`.
     #[arg(long, env = "WALLET_WORDS", value_parser = crate::parse_word_count)]
     pub words: Option<usize>,
+    /// Address type new wallets start with (changeable on the setup screen).
+    /// Overrides `address_kind` in `tui.toml`.
+    #[arg(long, value_enum, env = "WALLET_ADDRESS_TYPE")]
+    pub address_type: Option<crate::AddressType>,
 }
 
 /// Which wallet the TUI opens, and whether it can switch to others.
@@ -101,6 +111,9 @@ pub fn run(
     let mut config = TuiConfig::load(&config_path)?;
     if let Some(words) = args.words {
         config.mnemonic_words = words;
+    }
+    if let Some(address_type) = args.address_type {
+        config.address_kind = address_type.into();
     }
     let theme = config.theme.build().map_err(anyhow::Error::msg)?;
 
@@ -172,7 +185,8 @@ pub fn run(
     app.can_fallback = node == NodeMode::Polar;
 
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, &worker, frame);
+    let result = splash(&mut terminal, &app.theme)
+        .and_then(|()| event_loop(&mut terminal, &mut app, &worker, frame));
     ratatui::restore();
     if node == NodeMode::Local {
         eprintln!("Closing… (stopping the local node if nothing else uses it)");
@@ -180,6 +194,244 @@ pub fn run(
     // Dropping the handle stops the worker, which releases the local node.
     drop(worker);
     result
+}
+
+/// Exact rendered width of "B" at `PixelSize::Full` and of
+/// "WALLET"/"LIBRARY" at `PixelSize::HalfHeight`, measured with a
+/// throwaway `TestBackend` render. Used to slide each in from off its
+/// final spot.
+const BADGE_WIDTH: u16 = 7;
+const WALLET_WIDTH: u16 = 46;
+const LIBRARY_WIDTH: u16 = 54;
+const GLYPH_HEIGHT: u16 = 4;
+/// Height of "B" at `PixelSize::Full`: every row is a solid block (no
+/// half-filled top/bottom row like `HalfHeight` has), so a tick mark
+/// touches it flush on both sides instead of looking closer on one end.
+const BADGE_GLYPH_HEIGHT: u16 = 7;
+
+/// Column (and width) of "B"'s left vertical stroke within its own
+/// `BADGE_WIDTH`-wide box (measured the same way), where the tick marks
+/// line up - matching the stroke's own weight - to make it read as ₿
+/// rather than a plain letter.
+const BADGE_TICK_COL: u16 = 1;
+const BADGE_TICK_WIDTH: u16 = 2;
+/// One row of tick above the glyph, one below.
+const BADGE_HEIGHT: u16 = 1 + BADGE_GLYPH_HEIGHT + 1;
+
+/// One-time animated banner shown before the normal startup flow. A ₿ badge
+/// (a big "B" with a tick mark through the top and bottom, evoking the
+/// Bitcoin symbol without needing a Unicode glyph the font doesn't have)
+/// slides down from the top, "WALLET" slides in from the left and "LIBRARY"
+/// from the right, the tagline types itself in below, then "Press any key
+/// to continue" blinks until a key is pressed (any key skips straight to
+/// the usual picker/unlock/onboarding).
+///
+/// Everything here is block characters rendered through [`tui_big_text`] -
+/// the same technique throughout - so it looks identical in every terminal,
+/// with no image-protocol detection or resizing involved.
+fn splash(terminal: &mut DefaultTerminal, theme: &Theme) -> Result<()> {
+    const TAGLINE: &str = "A modular Bitcoin wallet library wrapping BDK.";
+    const WALLET_DELAY: Duration = Duration::from_millis(250);
+    const LIBRARY_DELAY: Duration = Duration::from_millis(400);
+    const SLIDE_IN: Duration = Duration::from_millis(400);
+    const TAGLINE_DELAY: Duration = Duration::from_millis(800);
+    const TYPE_IN: Duration = Duration::from_millis(500);
+    const PROMPT_DELAY: Duration = Duration::from_millis(1_500);
+    const BLINK: Duration = Duration::from_millis(500);
+
+    let accent = Style::new().fg(theme.accent).add_modifier(Modifier::BOLD);
+    let plain = Style::new().fg(theme.text).add_modifier(Modifier::BOLD);
+    let badge_text = BigText::builder()
+        .pixel_size(PixelSize::Full)
+        .style(accent)
+        .lines(vec!["B".into()])
+        .build();
+    let wallet_text = BigText::builder()
+        .pixel_size(PixelSize::HalfHeight)
+        .style(plain)
+        .lines(vec!["WALLET".into()])
+        .build();
+    let library_text = BigText::builder()
+        .pixel_size(PixelSize::HalfHeight)
+        .style(accent)
+        .lines(vec!["LIBRARY".into()])
+        .build();
+
+    let start = Instant::now();
+    loop {
+        let elapsed = Instant::now().saturating_duration_since(start);
+
+        let tagline = typed_in(TAGLINE, elapsed, TAGLINE_DELAY, TYPE_IN);
+        let blink_on = (elapsed.as_millis() / BLINK.as_millis()).is_multiple_of(2);
+        let prompt = if elapsed >= PROMPT_DELAY && blink_on {
+            "Press any key to continue"
+        } else {
+            ""
+        };
+
+        terminal.draw(|f| {
+            f.render_widget(Block::new().style(theme.base()), f.area());
+            let term_w = f.area().width;
+
+            let total_h = BADGE_HEIGHT + 1 + GLYPH_HEIGHT + 1 + GLYPH_HEIGHT + 1 + 1 + 1 + 1;
+            let top = f.area().y + f.area().height.saturating_sub(total_h) / 2;
+            let mut y = top;
+
+            let badge_x = f.area().x + (term_w.saturating_sub(BADGE_WIDTH)) / 2;
+            let badge_y = slide(f.area().y, top, elapsed, Duration::ZERO, SLIDE_IN);
+            let tick_x = badge_x + BADGE_TICK_COL;
+            f.render_widget(
+                Span::styled("██", accent),
+                Rect::new(tick_x, badge_y, BADGE_TICK_WIDTH, 1),
+            );
+            f.render_widget(
+                &badge_text,
+                Rect::new(badge_x, badge_y + 1, BADGE_WIDTH, BADGE_GLYPH_HEIGHT),
+            );
+            f.render_widget(
+                Span::styled("██", accent),
+                Rect::new(
+                    tick_x,
+                    badge_y + 1 + BADGE_GLYPH_HEIGHT,
+                    BADGE_TICK_WIDTH,
+                    1,
+                ),
+            );
+            y += BADGE_HEIGHT + 1;
+
+            let wallet_x = slide(
+                f.area().x,
+                f.area().x + (term_w.saturating_sub(WALLET_WIDTH)) / 2,
+                elapsed,
+                WALLET_DELAY,
+                SLIDE_IN,
+            );
+            f.render_widget(
+                &wallet_text,
+                Rect::new(wallet_x, y, WALLET_WIDTH, GLYPH_HEIGHT),
+            );
+            y += GLYPH_HEIGHT + 1;
+
+            let library_x = slide(
+                f.area().x + term_w.saturating_sub(LIBRARY_WIDTH),
+                f.area().x + (term_w.saturating_sub(LIBRARY_WIDTH)) / 2,
+                elapsed,
+                LIBRARY_DELAY,
+                SLIDE_IN,
+            );
+            f.render_widget(
+                &library_text,
+                Rect::new(library_x, y, LIBRARY_WIDTH, GLYPH_HEIGHT),
+            );
+            y += GLYPH_HEIGHT + 1;
+
+            let tagline_row = Rect::new(f.area().x, y, term_w, 1);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(tagline, theme.text())))
+                    .alignment(Alignment::Center),
+                tagline_row,
+            );
+            y += 2;
+
+            let prompt_row = Rect::new(f.area().x, y, term_w, 1);
+            f.render_widget(
+                Paragraph::new(Line::from(Span::styled(prompt, theme.muted())))
+                    .alignment(Alignment::Center),
+                prompt_row,
+            );
+        })?;
+        if event::poll(Duration::from_millis(33))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            return Ok(());
+        }
+    }
+}
+
+/// Eased position (x or y) between `from` and `to`, starting at `delay` and
+/// settling `dur` later. Before `delay`, stays at `from` (off its final
+/// spot, e.g. flush with a screen edge).
+fn slide(from: u16, to: u16, elapsed: Duration, delay: Duration, dur: Duration) -> u16 {
+    if elapsed < delay {
+        return from;
+    }
+    let t = anim::ease_out(((elapsed - delay).as_secs_f64() / dur.as_secs_f64()).min(1.0));
+    (from as f64 + (to as f64 - from as f64) * t).round() as u16
+}
+
+/// `text`, revealed character by character between `delay` and `delay + dur`
+/// after the animation started (empty before `delay`, whole after).
+fn typed_in(text: &str, elapsed: Duration, delay: Duration, dur: Duration) -> &str {
+    if elapsed < delay {
+        return "";
+    }
+    let t = (elapsed - delay).as_secs_f64() / dur.as_secs_f64();
+    let shown = (anim::ease_out(t) * text.chars().count() as f64).round() as usize;
+    match text.char_indices().nth(shown) {
+        Some((i, _)) => &text[..i],
+        None => text,
+    }
+}
+
+#[cfg(test)]
+mod splash_tests {
+    use super::*;
+
+    #[test]
+    fn typed_in_is_empty_before_the_delay() {
+        assert_eq!(
+            typed_in(
+                "hi",
+                Duration::ZERO,
+                Duration::from_millis(100),
+                Duration::from_millis(100)
+            ),
+            ""
+        );
+    }
+
+    #[test]
+    fn typed_in_is_whole_once_done() {
+        let dur = Duration::from_millis(100);
+        assert_eq!(typed_in("hi", dur, Duration::ZERO, dur), "hi");
+        assert_eq!(typed_in("hi", dur * 10, Duration::ZERO, dur), "hi");
+    }
+
+    #[test]
+    fn typed_in_grows_with_time_and_stays_on_char_boundaries() {
+        let dur = Duration::from_millis(100);
+        let text = "héllo"; // é is multi-byte, to catch slicing bugs
+        let early = typed_in(text, dur / 10, Duration::ZERO, dur);
+        let later = typed_in(text, dur / 2, Duration::ZERO, dur);
+        assert!(early.len() <= later.len());
+        assert!(text.starts_with(early));
+        assert!(text.starts_with(later));
+    }
+
+    #[test]
+    fn slide_stays_at_from_before_the_delay() {
+        let delay = Duration::from_millis(100);
+        let dur = Duration::from_millis(100);
+        assert_eq!(slide(0, 20, Duration::ZERO, delay, dur), 0);
+        assert_eq!(slide(50, 20, Duration::from_millis(50), delay, dur), 50);
+    }
+
+    #[test]
+    fn slide_reaches_to_once_done() {
+        let dur = Duration::from_millis(100);
+        assert_eq!(slide(0, 20, dur, Duration::ZERO, dur), 20);
+        assert_eq!(slide(0, 20, dur * 10, Duration::ZERO, dur), 20);
+    }
+
+    #[test]
+    fn slide_moves_monotonically_toward_to() {
+        let dur = Duration::from_millis(100);
+        let early = slide(0, 20, dur / 4, Duration::ZERO, dur);
+        let later = slide(0, 20, dur / 2, Duration::ZERO, dur);
+        assert!(early <= later);
+        assert!(later <= 20);
+    }
 }
 
 fn event_loop(

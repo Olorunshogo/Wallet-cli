@@ -7,8 +7,8 @@ use bdk_wallet::keys::bip39::{Language, Mnemonic, WordCount};
 use bdk_wallet::keys::{GeneratableKey, GeneratedKey};
 use bdk_wallet::miniscript::Segwitv0;
 use bdk_wallet::miniscript::descriptor::KeyMap;
-use bdk_wallet::template::Bip84;
-use wallet_core::{BoxError, KeySource, MnemonicLength};
+use bdk_wallet::template::{Bip44, Bip49, Bip84, Bip86};
+use wallet_core::{AddressKind, BoxError, KeySource, MnemonicLength};
 use zeroize::Zeroizing;
 
 /// Generate a new random English BIP39 mnemonic.
@@ -49,7 +49,11 @@ pub(crate) struct Resolved {
     pub keymap: KeyMap,
 }
 
-pub(crate) fn resolve(keys: &KeySource, network: Network) -> Result<Resolved, BoxError> {
+pub(crate) fn resolve(
+    keys: &KeySource,
+    network: Network,
+    address_kind: AddressKind,
+) -> Result<Resolved, BoxError> {
     let secp = Secp256k1::new();
     let kind = NetworkKind::from(network);
     let ((external, mut keymap), (internal, internal_keys)) = match keys {
@@ -58,10 +62,24 @@ pub(crate) fn resolve(keys: &KeySource, network: Network) -> Result<Resolved, Bo
             let passphrase = passphrase.as_ref().map(|p| p.as_str()).unwrap_or("");
             let seed = Zeroizing::new(mnemonic.to_seed(passphrase));
             let xprv = Xpriv::new_master(network, seed.as_slice())?;
-            (
-                Bip84(xprv, KeychainKind::External).into_wallet_descriptor(&secp, kind)?,
-                Bip84(xprv, KeychainKind::Internal).into_wallet_descriptor(&secp, kind)?,
-            )
+            match address_kind {
+                AddressKind::Legacy => (
+                    Bip44(xprv, KeychainKind::External).into_wallet_descriptor(&secp, kind)?,
+                    Bip44(xprv, KeychainKind::Internal).into_wallet_descriptor(&secp, kind)?,
+                ),
+                AddressKind::NestedSegwit => (
+                    Bip49(xprv, KeychainKind::External).into_wallet_descriptor(&secp, kind)?,
+                    Bip49(xprv, KeychainKind::Internal).into_wallet_descriptor(&secp, kind)?,
+                ),
+                AddressKind::Segwit => (
+                    Bip84(xprv, KeychainKind::External).into_wallet_descriptor(&secp, kind)?,
+                    Bip84(xprv, KeychainKind::Internal).into_wallet_descriptor(&secp, kind)?,
+                ),
+                AddressKind::Taproot => (
+                    Bip86(xprv, KeychainKind::External).into_wallet_descriptor(&secp, kind)?,
+                    Bip86(xprv, KeychainKind::Internal).into_wallet_descriptor(&secp, kind)?,
+                ),
+            }
         }
         KeySource::Descriptors { external, internal } => (
             external.as_str().into_wallet_descriptor(&secp, kind)?,
@@ -115,6 +133,6 @@ mod tests {
     #[test]
     fn invalid_mnemonic_is_rejected() {
         let keys = KeySource::mnemonic("not a real mnemonic phrase at all");
-        assert!(resolve(&keys, Network::Regtest).is_err());
+        assert!(resolve(&keys, Network::Regtest, AddressKind::default()).is_err());
     }
 }

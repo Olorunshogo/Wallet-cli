@@ -4,7 +4,7 @@ use bdk_wallet::bitcoin::Network;
 use bdk_wallet::miniscript::descriptor::KeyMap;
 use bdk_wallet::rusqlite::Connection;
 use bdk_wallet::{CreateWithPersistError, KeychainKind, Wallet};
-use wallet_core::{CoinSelection, CreateError, Error, KeySource, LoadError};
+use wallet_core::{AddressKind, CoinSelection, CreateError, Error, KeySource, LoadError};
 
 use crate::convert;
 use crate::engine::BdkEngine;
@@ -30,6 +30,7 @@ enum Storage {
 pub struct BdkEngineBuilder {
     network: Network,
     keys: Option<KeySource>,
+    address_kind: AddressKind,
     storage: Storage,
     coin_selection: CoinSelection,
     lookahead: Option<u32>,
@@ -41,6 +42,7 @@ impl BdkEngineBuilder {
         Self {
             network,
             keys: None,
+            address_kind: AddressKind::default(),
             storage: Storage::Memory,
             coin_selection: CoinSelection::default(),
             lookahead: None,
@@ -52,6 +54,14 @@ impl BdkEngineBuilder {
     /// omitting them opens the stored wallet watch-only.
     pub fn keys(mut self, keys: KeySource) -> Self {
         self.keys = Some(keys);
+        self
+    }
+
+    /// Script type for a [`KeySource::Mnemonic`]'s own addresses (default
+    /// [`AddressKind::Segwit`], i.e. BIP84). Ignored for
+    /// [`KeySource::Descriptors`], which is already explicit about this.
+    pub fn address_kind(mut self, kind: AddressKind) -> Self {
+        self.address_kind = kind;
         self
     }
 
@@ -123,10 +133,11 @@ impl BdkEngineBuilder {
         let keys = self.keys.as_ref().ok_or_else(|| {
             CreateError::InvalidDescriptor("no keys provided: call .keys(..) before create".into())
         })?;
-        let resolved = keys::resolve(keys, self.network).map_err(|e| match keys {
-            KeySource::Mnemonic { .. } => CreateError::InvalidMnemonic(e),
-            KeySource::Descriptors { .. } => CreateError::InvalidDescriptor(e),
-        })?;
+        let resolved =
+            keys::resolve(keys, self.network, self.address_kind).map_err(|e| match keys {
+                KeySource::Mnemonic { .. } => CreateError::InvalidMnemonic(e),
+                KeySource::Descriptors { .. } => CreateError::InvalidDescriptor(e),
+            })?;
         let mut params = Wallet::create(resolved.external, resolved.internal).network(self.network);
         if let Some(n) = self.lookahead {
             params = params.lookahead(n);
@@ -149,10 +160,11 @@ impl BdkEngineBuilder {
         let mut params = Wallet::load().check_network(self.network);
         let mut keymap = KeyMap::new();
         if let Some(keys) = &self.keys {
-            let resolved = keys::resolve(keys, self.network).map_err(|e| match keys {
-                KeySource::Mnemonic { .. } => LoadError::InvalidMnemonic(e),
-                KeySource::Descriptors { .. } => LoadError::InvalidDescriptor(e),
-            })?;
+            let resolved =
+                keys::resolve(keys, self.network, self.address_kind).map_err(|e| match keys {
+                    KeySource::Mnemonic { .. } => LoadError::InvalidMnemonic(e),
+                    KeySource::Descriptors { .. } => LoadError::InvalidDescriptor(e),
+                })?;
             // BDK checks the stored descriptors match the ones derived here.
             params = params
                 .descriptor(KeychainKind::External, Some(resolved.external))

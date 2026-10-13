@@ -32,7 +32,7 @@ pub use error::{
     AddressError, BoxError, BroadcastError, BuildTxError, BumpFeeError, CreateError, Error,
     FeeEstimateError, LoadError, SignError, SourceError, SyncError, TrackTxError,
 };
-pub use keys::{KeySource, MnemonicLength};
+pub use keys::{AddressKind, KeySource, MnemonicLength};
 pub use types::{
     AddressInfo, Balance, BlockId, CoinSelection, Keychain, Recipient, SignOutcome, SyncReport,
     TxDetails, TxRequest, TxStatus, Utxo,

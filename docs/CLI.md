@@ -140,10 +140,10 @@ Global options go anywhere on the line.
 
 | Command | Does |
 |---|---|
-| `init [--words 12\|15\|18\|21\|24]` | create a wallet with fresh recovery words (default from `WALLET_WORDS`, else 12) |
-| `restore --mnemonic "…" [--passphrase …] [--birthday N]` | rebuild a wallet from its words; `--birthday` skips older blocks on the first sync |
+| `init [--words 12\|15\|18\|21\|24] [--address-type legacy\|nested-segwit\|segwit\|taproot]` | create a wallet with fresh recovery words (default from `WALLET_WORDS`, else 12; address type from `WALLET_ADDRESS_TYPE`, else `segwit`/BIP84) |
+| `restore --mnemonic "…" [--passphrase …] [--birthday N] [--address-type legacy\|nested-segwit\|segwit\|taproot]` | rebuild a wallet from its words; `--birthday` skips older blocks on the first sync; the address type must match the one the wallet was created with |
 | `wallets [list]` | list wallets |
-| `wallets create <name> [--words N]` | same as `-w <name> init` |
+| `wallets create <name> [--words N] [--address-type legacy\|nested-segwit\|segwit\|taproot]` | same as `-w <name> init` |
 | `wallets use <name>` | set the default |
 | `wallets rename <old> <new>` | rename |
 | `wallets remove <name> [--yes] [--force]` | delete |

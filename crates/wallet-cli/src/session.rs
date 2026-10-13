@@ -6,7 +6,7 @@
 
 use anyhow::{Context, Result, bail};
 use wallet::bitcoin::Network;
-use wallet::{KeySource, Wallet};
+use wallet::{AddressKind, KeySource, Wallet};
 use zeroize::Zeroizing;
 
 use crate::config::DataDir;
@@ -15,6 +15,8 @@ use crate::config::DataDir;
 pub struct NewWallet {
     /// The wallet's keys. Must be a mnemonic so it can be stored.
     pub keys: KeySource,
+    /// Script type for the wallet's own addresses. Fixed for its lifetime.
+    pub address_kind: AddressKind,
     /// First block to scan on the initial sync.
     pub birthday: Option<u32>,
     /// Encrypt the stored mnemonic with this password. `None` stores it in
@@ -50,12 +52,15 @@ pub fn create(dir: &DataDir, network: Network, new: NewWallet) -> Result<Wallet>
     let passphrase = passphrase.clone();
     dir.ensure()?;
 
-    let mut builder = Wallet::builder(network).keys(new.keys).database(dir.db());
+    let mut builder = Wallet::builder(network)
+        .keys(new.keys)
+        .address_kind(new.address_kind)
+        .database(dir.db());
     if let Some(height) = new.birthday {
         builder = builder.birthday(height);
     }
     let wallet = builder.create().context("could not create wallet")?;
-    dir.save_meta(new.birthday)?;
+    dir.save_meta(new.birthday, new.address_kind)?;
 
     match &new.password {
         Some(password) => {
@@ -95,11 +100,14 @@ pub fn open(dir: &DataDir, network: Network, keys: Option<KeySource>) -> Result<
             dir.path().display()
         );
     }
-    let mut builder = Wallet::builder(network).database(dir.db());
+    let meta = dir.load_meta()?;
+    let mut builder = Wallet::builder(network)
+        .address_kind(meta.address_kind)
+        .database(dir.db());
     if let Some(keys) = keys {
         builder = builder.keys(keys);
     }
-    if let Some(height) = dir.load_meta()?.birthday {
+    if let Some(height) = meta.birthday {
         builder = builder.birthday(height);
     }
     builder.load().context("could not load wallet")
@@ -130,6 +138,7 @@ mod tests {
         let (_tmp, dir) = datadir();
         let new = NewWallet {
             keys: KeySource::mnemonic(fresh_phrase()),
+            address_kind: AddressKind::default(),
             birthday: Some(7),
             password: None,
         };
@@ -153,6 +162,7 @@ mod tests {
         let (_tmp, dir) = datadir();
         let new = NewWallet {
             keys: KeySource::mnemonic_with_passphrase(fresh_phrase(), "extra words"),
+            address_kind: AddressKind::default(),
             birthday: None,
             password: Some(Zeroizing::new("pw".into())),
         };
@@ -175,6 +185,7 @@ mod tests {
         let (_tmp, dir) = datadir();
         let new = NewWallet {
             keys: KeySource::mnemonic(fresh_phrase()),
+            address_kind: AddressKind::default(),
             birthday: None,
             password: Some(Zeroizing::new("pw".into())),
         };
@@ -188,6 +199,7 @@ mod tests {
         assert!(open(&dir, Network::Regtest, None).is_err());
         let new = || NewWallet {
             keys: KeySource::mnemonic(fresh_phrase()),
+            address_kind: AddressKind::default(),
             birthday: None,
             password: None,
         };

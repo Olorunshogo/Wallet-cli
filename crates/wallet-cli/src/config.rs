@@ -4,9 +4,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use clap::Args;
 use serde::{Deserialize, Serialize};
-use wallet::KeySource;
 use wallet::bitcoin::Network;
 use wallet::rpc::{RpcAuth, RpcClient};
+use wallet::{AddressKind, KeySource};
 use zeroize::Zeroizing;
 
 // === Data directory
@@ -31,6 +31,10 @@ pub struct Meta {
     pub last_balance_sat: Option<u64>,
     /// Chain height at the last sync.
     pub last_height: Option<u32>,
+    /// Script type this wallet's own addresses were created with. Fixed at
+    /// creation: an older `meta.json` without this defaults to the kind
+    /// every wallet used before address kinds existed (BIP84).
+    pub address_kind: AddressKind,
 }
 
 impl DataDir {
@@ -52,8 +56,11 @@ impl DataDir {
             .with_context(|| format!("could not create {}", self.path.display()))
     }
 
-    pub fn save_meta(&self, birthday: Option<u32>) -> Result<()> {
-        self.update_meta(|m| m.birthday = birthday)
+    pub fn save_meta(&self, birthday: Option<u32>, address_kind: AddressKind) -> Result<()> {
+        self.update_meta(|m| {
+            m.birthday = birthday;
+            m.address_kind = address_kind;
+        })
     }
 
     /// Remember the balance and height after a sync, for wallet lists.

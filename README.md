@@ -1,6 +1,6 @@
-# Wallet_library
+# Wallet Library
 
-A small, modular Bitcoin wallet library in Rust, plus a CLI and a terminal UI built on it. The library handles key management, BIP84 address derivation, UTXO tracking, coin selection, PSBT building and signing, fee bumping and chain sync behind a typed API, so applications do not have to reimplement wallet logic.
+A modular Bitcoin wallet library in Rust, plus a CLI and a terminal UI built on it. The library handles key management, address derivation (legacy, nested SegWit, native SegWit or Taproot), UTXO tracking, coin selection, PSBT building and signing, fee bumping and chain sync behind a typed API, so applications do not have to reimplement wallet logic.
 
 Built for the Rust for Bitcoin cohort capstone (project 7: Wallet Library).
 
@@ -60,6 +60,8 @@ A wallet syncs by reading blocks from a Bitcoin Core node over RPC, and broadcas
 
 If the node cannot be reached, the TUI opens **OFFLINE**, shows why on the dashboard, and keeps retrying (with Polar, `L` switches to the local node for that session).
 
+The TUI auto-syncs every `WALLET_REFRESH_SECS` seconds (default 30), or a `refresh_secs` set in `tui.toml`, which wins; `0` turns it off. See [docs/TUI.md](docs/TUI.md#customising).
+
 ## Requirements
 
 | Need | Why |
@@ -115,7 +117,7 @@ let mut wallet = Wallet::builder(Network::Regtest)
     .database("wallet.sqlite")
     .create_or_load()?;
 
-let receive = wallet.new_address()?;          // next unused BIP84 address
+let receive = wallet.new_address()?;          // next unused address (BIP84 by default)
 wallet.sync(&node)?;                          // pull blocks and mempool
 let balance = wallet.balance();               // confirmed, unconfirmed, immature
 
@@ -142,6 +144,7 @@ match wallet.build_tx(recipients, fee_rate) {
 | Method | Returns |
 |---|---|
 | `Wallet::builder(network).keys(..).database(..).create() / load() / create_or_load()` | `Wallet` |
+| `.address_kind(kind)` on the builder | script type for a mnemonic's own addresses: `Legacy`, `NestedSegwit`, `Segwit` (default) or `Taproot`; ignored for explicit descriptors |
 | `generate_mnemonic(length)` / `validate_mnemonic(phrase)` | fresh 12/15/18/21/24-word phrase / check one |
 | `new_address()` / `reveal_next_address()` | next unused / always-fresh receive address |
 | `balance()` | `Balance { confirmed, unconfirmed, immature }` |
@@ -199,3 +202,6 @@ cargo doc --workspace --no-deps --open
 
 - v2: a native engine without BDK ([docs/v2](docs/v2/README.md))
 - Esplora backend (a second `BlockSource`)
+- Consolidated, polished crate-level documentation
+- How does this crate interact with bdk and do I need to run a node to interact with it?
+

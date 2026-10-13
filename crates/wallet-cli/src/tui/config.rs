@@ -6,6 +6,7 @@
 //! ```toml
 //! refresh_secs = 5
 //! fallback_fee_rate = 3
+//! address_kind = "taproot"
 //!
 //! [theme]
 //! accent = "#f7931a"
@@ -16,7 +17,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
-use wallet::MnemonicLength;
+use wallet::{AddressKind, MnemonicLength};
 
 use super::theme::ThemeConfig;
 
@@ -42,6 +43,8 @@ pub struct TuiConfig {
     pub tween_ms: u64,
     /// Number of words for newly generated mnemonics (12, 15, 18, 21, 24).
     pub mnemonic_words: usize,
+    /// Script type new wallets start with on the setup screen.
+    pub address_kind: AddressKind,
     /// How many recent transactions the dashboard lists.
     pub recent_txs: usize,
     /// Seconds before copied recovery words are cleared from the clipboard.
@@ -50,10 +53,15 @@ pub struct TuiConfig {
     pub theme: ThemeConfig,
 }
 
+/// `WALLET_REFRESH_SECS`, parsed, or 30 if unset or not a number.
+fn parse_refresh_secs(raw: Option<String>) -> u64 {
+    raw.and_then(|s| s.parse().ok()).unwrap_or(30)
+}
+
 impl Default for TuiConfig {
     fn default() -> Self {
         Self {
-            refresh_secs: 10,
+            refresh_secs: parse_refresh_secs(std::env::var("WALLET_REFRESH_SECS").ok()),
             reconnect_secs: 5,
             fee_target_blocks: 6,
             fallback_fee_rate: 2,
@@ -62,6 +70,7 @@ impl Default for TuiConfig {
             toast_secs: 4,
             tween_ms: 700,
             mnemonic_words: 12,
+            address_kind: AddressKind::default(),
             recent_txs: 6,
             clipboard_clear_secs: 60,
             theme: ThemeConfig::default(),
@@ -160,6 +169,7 @@ mod tests {
             r##"
             refresh_secs = 0
             mnemonic_words = 24
+            address_kind = "taproot"
             [theme]
             accent = "#ff0000"
             "##,
@@ -167,6 +177,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.refresh(), None);
         assert_eq!(config.mnemonic_length(), MnemonicLength::Words24);
+        assert_eq!(config.address_kind, AddressKind::Taproot);
         assert_eq!(config.theme.accent, "#ff0000");
     }
 
@@ -176,6 +187,7 @@ mod tests {
         assert!(TuiConfig::parse("fps = 0").is_err());
         assert!(TuiConfig::parse("mnemonic_words = 13").is_err());
         assert!(TuiConfig::parse("fallback_fee_rate = 5000").is_err());
+        assert!(TuiConfig::parse("address_kind = \"bip84\"").is_err());
         assert!(TuiConfig::parse("[theme]\naccent = \"not-a-color\"").is_err());
     }
 
@@ -183,5 +195,17 @@ mod tests {
     fn missing_file_gives_defaults() {
         let path = Path::new("/definitely/not/here/tui.toml");
         assert_eq!(TuiConfig::load(path).unwrap(), TuiConfig::default());
+    }
+
+    #[test]
+    fn refresh_secs_env_fallback_is_30() {
+        assert_eq!(parse_refresh_secs(None), 30);
+        assert_eq!(parse_refresh_secs(Some("not-a-number".into())), 30);
+    }
+
+    #[test]
+    fn refresh_secs_env_is_used_when_valid() {
+        assert_eq!(parse_refresh_secs(Some("5".into())), 5);
+        assert_eq!(parse_refresh_secs(Some("0".into())), 0);
     }
 }

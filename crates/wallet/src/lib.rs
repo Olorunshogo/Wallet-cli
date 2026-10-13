@@ -40,11 +40,11 @@
 pub use wallet_bdk::{BdkEngine, BdkEngineBuilder, generate_mnemonic, validate_mnemonic};
 pub use wallet_core::bitcoin;
 pub use wallet_core::{
-    AddressError, AddressInfo, Balance, BlockId, BlockSource, BoxError, BroadcastError,
-    Broadcaster, BuildTxError, BumpFeeError, CoinSelection, CreateError, Error, FeeEstimateError,
-    FeeEstimator, KeySource, Keychain, LoadError, MnemonicLength, Recipient, SignError,
-    SignOutcome, SourceError, SyncError, SyncReport, TrackTxError, TxDetails, TxRequest, TxStatus,
-    Utxo, WalletEngine,
+    AddressError, AddressInfo, AddressKind, Balance, BlockId, BlockSource, BoxError,
+    BroadcastError, Broadcaster, BuildTxError, BumpFeeError, CoinSelection, CreateError, Error,
+    FeeEstimateError, FeeEstimator, KeySource, Keychain, LoadError, MnemonicLength, Recipient,
+    SignError, SignOutcome, SourceError, SyncError, SyncReport, TrackTxError, TxDetails, TxRequest,
+    TxStatus, Utxo, WalletEngine,
 };
 
 /// An in-memory chain for testing code built on this library, no node needed.
@@ -501,6 +501,15 @@ impl WalletBuilder {
     pub fn keys(self, keys: KeySource) -> Self {
         Self {
             inner: self.inner.keys(keys),
+        }
+    }
+
+    /// Script type for a mnemonic's own addresses (default [`AddressKind::Segwit`],
+    /// i.e. BIP84). Ignored for explicit descriptors, which are already
+    /// specific about this. Sending is unaffected either way.
+    pub fn address_kind(self, kind: AddressKind) -> Self {
+        Self {
+            inner: self.inner.address_kind(kind),
         }
     }
 
